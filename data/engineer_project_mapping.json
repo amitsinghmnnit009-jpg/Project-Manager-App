@@ -1,0 +1,31 @@
+{
+  "$schema": "./engineer_project_mapping.schema.json",
+  "engineers": [
+    {
+      "name": "Alice Engineer",
+      "knox_id": "alice.engineer"
+    },
+    {
+      "name": "Bob Coder",
+      "knox_id": "bob.coder"
+    },
+    {
+      "name": "Charlie QA",
+      "knox_id": "charlie.qa"
+    }
+  ],
+  "assignments": [
+    {
+      "knox_id": "alice.engineer",
+      "projects": ["SSDFW", "SIMFW"]
+    },
+    {
+      "knox_id": "bob.coder",
+      "projects": ["SSDFW"]
+    },
+    {
+      "knox_id": "charlie.qa",
+      "projects": ["SSDQA"]
+    }
+  ]
+}

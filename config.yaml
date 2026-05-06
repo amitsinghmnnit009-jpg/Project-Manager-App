@@ -1,0 +1,125 @@
+# =============================================================================
+# Project-Manager-App — Configuration (Phase 1)
+# =============================================================================
+# This file holds all runtime configuration. Edit and copy to the target
+# machine. Do NOT commit real tokens to version control.
+# =============================================================================
+
+# --- LLM provider selection -------------------------------------------------
+llm:
+  provider: ollama   # one of: ollama | openai
+
+  # Used when provider == "ollama"
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "gpt-oss:latest"
+    embed_model: "nomic-embed-text"
+    timeout_seconds: 600
+
+  # Used when provider == "openai"
+  # Works with: real OpenAI, Azure OpenAI, vLLM, internal company gateways,
+  # or any endpoint that speaks the OpenAI Chat Completions / Embeddings API.
+  openai:
+    base_url: "http://localhost:11434"   # FILL: internal gateway URL on target machine
+    model: "gpt-oss:latest"
+    embed_model: "nomic-embed-text"
+    timeout_seconds: 600
+    api_key: ""                          # FILL or leave empty if header-auth
+    custom_headers:                      # FILL: any internal-gateway auth headers
+      x-dep-ticket: "credential:"
+      User-Type: "AD_ID"
+      User-Id: ""
+      Send-System-Name: "project-manager-app"
+
+  # Sampling defaults — applied to all chat completions
+  temperature: 0.2
+
+# --- JIRA Data Center -------------------------------------------------------
+jira:
+  base_url: ""                # FILL: e.g. https://jira.yourcompany.local
+  token: ""                   # FILL: personal access token (Bearer)
+  api_version: "2"
+  verify_ssl: true
+  ca_bundle: ""               # optional path to corporate CA bundle (.pem/.crt)
+  enable_http_logging: false  # log every request/response (debug only)
+
+# --- Confluence Data Center -------------------------------------------------
+confluence:
+  base_url: ""                # FILL: e.g. https://confluence.yourcompany.local
+  token: ""                   # FILL: personal access token (Bearer)
+  verify_ssl: true
+  ca_bundle: ""
+  enable_http_logging: false
+  request_delay_seconds: 10   # baked-in delay between requests (rate-limit safety)
+
+# --- Database (Phase 1: SQLite, swap to PostgreSQL later via SQLAlchemy URL) -
+database:
+  url: "sqlite:///./app.db"
+
+# --- Logging ----------------------------------------------------------------
+logging:
+  directory: "./logs"
+  level: "INFO"                # DEBUG | INFO | WARNING | ERROR
+  rotate_max_bytes: 10485760   # 10 MB per file
+  rotate_backups: 10
+
+# --- Scheduler --------------------------------------------------------------
+scheduler:
+  status_recompute_cadence: "daily"      # daily | hourly | manual
+  weekly_aggregation_offset_minutes: 5   # minutes after per-project cutoff to start
+  timezone: "Asia/Kolkata"
+
+# --- Email (mocked in Phase 1) ----------------------------------------------
+email:
+  mock: true                                  # Phase 1: write to log instead of SMTP
+  mock_log_path: "./logs/sent_emails.jsonl"
+  smtp_host: ""
+  smtp_port: 25
+  from_address: "project-manager-app@noreply.local"
+
+# --- Reminder timing --------------------------------------------------------
+reminders:
+  hours_before_cutoff: 24
+  hours_after_cutoff: 4
+
+# --- Reports ----------------------------------------------------------------
+reports:
+  retention_weeks: 4
+  default_template_path: "./data/report_template_default.md"
+
+# --- Engineer mapping -------------------------------------------------------
+engineers:
+  mapping_file: "./data/engineer_project_mapping.json"
+
+# --- Holiday calendar -------------------------------------------------------
+holidays:
+  calendar_file: "./data/holidays_ist_2026.yaml"
+  default_calendar_id: "default"
+
+# --- API server -------------------------------------------------------------
+api:
+  host: "127.0.0.1"
+  port: 8000
+
+# --- Per-project configuration ----------------------------------------------
+# Add one entry per project. The Admin/PGM onboards new projects here.
+# All fields except `code`, `name`, `confluence_page_url`, `jira_project_key`
+# are optional and inherit from global defaults if omitted.
+projects: []
+# Example entry (copy and edit):
+# - code: "SSDFW"
+#   name: "SSD Firmware v3"
+#   type: "firmware"
+#   description: "Firmware for next-gen SSD controller"
+#   owning_tl: "Alice TL"
+#   owning_pgm: "Bob PGM"
+#   start_date: "2026-01-15"
+#   planned_end_date: "2026-12-31"
+#   confluence_page_url: "https://confluence.yourcompany.local/display/SPACE/SSD+Firmware+v3"
+#   jira_project_key: "SSDFW"
+#   weekly_cutoff: "Mon 13:00"          # IST
+#   week_boundary: "monday"
+#   recompute_cadence: "daily"          # overrides global
+#   issue_types: ["Task", "Sub-task", "Story", "Bug"]   # configurable per project
+#   chronic_threshold: 3
+#   holiday_calendar_id: "default"

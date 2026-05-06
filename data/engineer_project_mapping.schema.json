@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Engineer-Project Mapping",
+  "description": "Maps engineers (by knox_id) to the projects they work on. Read by app.registry.engineers at startup. Refresh requires app restart in Phase 1.",
+  "type": "object",
+  "required": ["engineers", "assignments"],
+  "properties": {
+    "engineers": {
+      "type": "array",
+      "description": "Master list of engineers. Each engineer appears exactly once here.",
+      "items": {
+        "type": "object",
+        "required": ["name", "knox_id"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Display name as it appears in JIRA's 'displayName' field"
+          },
+          "knox_id": {
+            "type": "string",
+            "description": "Internal company unique identifier; matched against JIRA accountId/key/name/email"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "assignments": {
+      "type": "array",
+      "description": "Which engineers are on which projects.",
+      "items": {
+        "type": "object",
+        "required": ["knox_id", "projects"],
+        "properties": {
+          "knox_id": {
+            "type": "string",
+            "description": "Must match a knox_id in the engineers list above"
+          },
+          "projects": {
+            "type": "array",
+            "description": "List of project codes (matching config.yaml projects[].code)",
+            "items": { "type": "string" },
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
