@@ -85,6 +85,68 @@ def test_jira_search_pagination_single_page():
 
 
 @responses.activate
+def test_jira_collect_activity_case_insensitive_name_match():
+    """Engineer mapping has 'Rahul Kumar' (capital K); JIRA returns 'Rahul kumar'
+    (lowercase k). The matcher must handle this."""
+    from datetime import date
+    from app.clients.jira_client import JiraClient
+
+    # One issue with one comment from "Rahul kumar" (lowercase k)
+    issue = {
+        "key": "PROJ-1",
+        "fields": {
+            "summary": "Test",
+            "status": {"name": "In Progress"},
+            "issuetype": {"name": "Task"},
+            "assignee": None,
+            "reporter": None,
+            "created": "2026-04-01T10:00:00.000+0530",
+            "updated": "2026-05-05T10:00:00.000+0530",
+        },
+        "changelog": {"histories": []},
+    }
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/search",
+        json={"issues": [issue], "total": 1},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/issue/PROJ-1/comment",
+        json={"comments": [{
+            "created": "2026-05-06T10:00:00.000+0530",  # within current week
+            "author": {"displayName": "Rahul kumar", "name": "rahul.k"},
+            "body": "ran tests, all green",
+        }]},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/issue/PROJ-1/worklog",
+        json={"worklogs": []},
+        status=200,
+    )
+
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    # Engineer mapping has the canonical "Rahul Kumar" with capital K
+    engineers = [{"name": "Rahul Kumar", "knox_id": "RAHUL.K"}]
+
+    # Use a recent week_of so the comment falls within
+    from datetime import datetime, timedelta
+    week_of = (datetime.now().date() - timedelta(days=datetime.now().weekday()))
+
+    activity = client.collect_engineer_activity("PROJ", week_of, engineers)
+
+    # Rahul should be MATCHED (not unmapped) despite the case mismatch
+    assert "RAHUL.K" in activity.by_engineer, \
+        f"expected RAHUL.K in by_engineer, got {list(activity.by_engineer.keys())} " \
+        f"and unmapped={[u.display_name for u in activity.unmapped_authors]}"
+    assert activity.unmapped_authors == [], \
+        f"expected no unmapped authors, got {activity.unmapped_authors}"
+
+
+@responses.activate
 def test_jira_search_filters_by_issue_type():
     responses.add(
         responses.GET,

@@ -273,8 +273,15 @@ class JiraClient:
         log = sync_log()
         sys = system_log()
 
-        member_ids = {e["knox_id"] for e in engineers}
-        member_names = {e["name"] for e in engineers}
+        # Build case-insensitive, whitespace-trimmed lookup tables.
+        # Knox IDs and display names are routinely written with different
+        # capitalisation in JIRA vs the mapping file ("Rahul Kumar" vs
+        # "Rahul kumar"); matching has to be tolerant of that.
+        def _norm(s: str) -> str:
+            return (s or "").strip().lower()
+
+        lookup_by_knox: dict[str, dict] = {_norm(e["knox_id"]): e for e in engineers}
+        lookup_by_name: dict[str, dict] = {_norm(e["name"]): e for e in engineers}
 
         # Window: report week is 7 days starting at week_of (00:00 IST).
         # We search for issues updated since week_of - 1d to be safe with TZs.
@@ -298,23 +305,32 @@ class JiraClient:
             raise
 
         def _classify_author(u: dict) -> tuple[Optional[str], str, str]:
-            """Returns (knox_id_or_None, display_name, user_id)."""
+            """Returns (knox_id_or_None, display_name, user_id).
+
+            Matches the JIRA author against the engineer mapping using
+            case-insensitive, whitespace-trimmed comparison on:
+              1. accountId / key / username
+              2. emailAddress
+              3. displayName
+            """
             if not u:
                 return None, "", ""
             a_id = u.get("accountId") or u.get("key") or u.get("name") or ""
             a_name = u.get("displayName") or u.get("name") or ""
             email = u.get("emailAddress", "") or ""
 
-            # Try to match against the engineer mapping
-            if a_id in member_ids:
-                return a_id, a_name, a_id
-            if a_name in member_names:
-                # Find the knox_id for this display name
-                for e in engineers:
-                    if e["name"] == a_name:
+            # 1 + 2: ID-shaped fields → look up by knox_id
+            for cand in (a_id, email):
+                if cand:
+                    e = lookup_by_knox.get(_norm(cand))
+                    if e:
                         return e["knox_id"], a_name, a_id
-            if email and email in member_ids:
-                return email, a_name, a_id
+
+            # 3: display name → look up by name
+            if a_name:
+                e = lookup_by_name.get(_norm(a_name))
+                if e:
+                    return e["knox_id"], a_name, a_id
 
             return None, a_name, a_id
 
