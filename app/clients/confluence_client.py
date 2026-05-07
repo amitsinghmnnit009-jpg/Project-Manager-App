@@ -139,8 +139,20 @@ class ConfluenceClient:
     # ---------- whoami / health -----------------------------------------
 
     def whoami(self) -> dict:
-        """Verify the token works."""
-        return self._get("/rest/api/user/current")
+        """Verify the token works by listing spaces (minimal data).
+
+        Note: deliberately NOT using /rest/api/user/current — many corporate
+        Confluence DC instances apply aggressive per-endpoint rate limits to
+        /user/* paths as a defense against user enumeration. The POC never
+        called user/current; we shouldn't either.
+
+        Returns the first space (or empty list if account has no space access).
+        """
+        data = self._get("/rest/api/space", {"limit": 1})
+        return {
+            "spaces_visible": data.get("size", 0),
+            "first_space": (data.get("results") or [{}])[0],
+        }
 
     # ---------- page fetch ----------------------------------------------
 

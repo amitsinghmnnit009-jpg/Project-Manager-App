@@ -78,15 +78,25 @@ def whoami_jira():
 
 @cli.command("whoami-confluence")
 def whoami_confluence():
-    """Verify Confluence token is valid by calling /rest/api/user/current."""
+    """Verify Confluence token works by listing one space.
+
+    Goes through /rest/api/space (not /user/current) to avoid the
+    aggressive per-endpoint rate limits many corporate Confluence DC
+    instances apply to user-info endpoints.
+    """
     from app.clients import get_confluence_client
     try:
-        me = get_confluence_client().whoami()
+        result = get_confluence_client().whoami()
     except Exception as e:
         click.echo(f"[FAIL] {e}", err=True)
         sys.exit(1)
-    click.echo(f"[OK] Authenticated as: {me.get('displayName') or me.get('username')} "
-               f"({me.get('accountId') or me.get('userKey') or me.get('username')})")
+    spaces_visible = result.get("spaces_visible", 0)
+    first = result.get("first_space") or {}
+    if spaces_visible:
+        click.echo(f"[OK] Token works. {spaces_visible}+ space(s) visible. "
+                   f"First: {first.get('key', '?')} ({first.get('name', '?')})")
+    else:
+        click.echo("[OK] Token works (no spaces visible to this account).")
 
 
 @cli.command("fetch-confluence-page")

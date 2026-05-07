@@ -90,6 +90,45 @@ class _LoggingRetry(Retry):
         return rate_limit_wait(response.headers)
 
     def increment(self, method=None, url=None, response=None, error=None, *a, **kw):
+        # Fail-fast: if the server says the rate-limit bucket has fillrate=0,
+        # there is nothing to wait for. Each retry just burns tokens that
+        # aren't being replaced — stop immediately so we don't dig deeper.
+        if response is not None and response.status == 429:
+            fillrate_header = response.headers.get("x-ratelimit-fillrate")
+            if fillrate_header is not None:
+                try:
+                    if float(fillrate_header) == 0:
+                        log = system_log()
+                        log.error(
+                            f"http giving up on {method} → 429 (fillrate=0)",
+                            extra={
+                                "event": "http_rate_limit_exhausted",
+                                "method": method,
+                                "url": url,
+                                "interval": response.headers.get("x-ratelimit-interval-seconds"),
+                                "fillrate": fillrate_header,
+                                "hint": (
+                                    "Server-side rate-limit bucket is empty with no refill. "
+                                    "Wait at least 1 hour or contact your Confluence/JIRA admin "
+                                    "to check your token's quota."
+                                ),
+                            },
+                        )
+                        # Exhaust retry budget so urllib3 stops here
+                        kw["_pool"] = kw.get("_pool")
+                        # Force a non-retry by saying we have 0 attempts left
+                        from urllib3.exceptions import MaxRetryError
+                        raise MaxRetryError(
+                            pool=kw.get("_pool"),
+                            url=url,
+                            reason=Exception(
+                                "Rate-limit bucket exhausted (fillrate=0). "
+                                "Wait for refill or check token quota with admin."
+                            ),
+                        )
+                except ValueError:
+                    pass
+
         new = super().increment(
             method=method, url=url, response=response, error=error, *a, **kw
         )
