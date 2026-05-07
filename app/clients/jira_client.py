@@ -217,12 +217,12 @@ class JiraClient:
     ) -> list[dict]:
         """Paginated JQL search. Default JQL: project = X AND updated >= since.
 
-        `since` is formatted to minute precision (yyyy-MM-dd HH:mm) so that
-        JIRA matches the semantics of UI's relative -Nd queries; date-only
-        format makes JIRA snap to midnight in the server's TZ which can
-        introduce subtle off-by-day-boundary discrepancies.
+        `since` is formatted as date-only (yyyy-MM-dd). JIRA snaps this to
+        the start of the day in the server's TZ, which has matched UI counts
+        in practice. If TZ-edge discrepancies show up later, switch to
+        minute-precision formatting.
         """
-        since_str = since.strftime("%Y-%m-%d %H:%M")
+        since_str = since.strftime("%Y-%m-%d")
         jql = f'project = "{project_key}" AND updated >= "{since_str}" ORDER BY updated DESC'
         self._last_jql = jql  # exposed for debug/CLI
 

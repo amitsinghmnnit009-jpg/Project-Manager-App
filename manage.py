@@ -115,12 +115,9 @@ def jira_search(project_key, days, issue_types, show, show_all):
     we'll use for the Aggregation Engine."""
     from datetime import datetime, timedelta
     from app.clients import get_jira_client
-    from app.utils.dates import now_ist
 
     types = [t.strip() for t in issue_types.split(",")] if issue_types else None
-    # Use IST (project TZ per NFR Phase 1) for the since calculation, drop tz
-    # for JQL since JIRA expects naive in server time.
-    since = (now_ist() - timedelta(days=days)).replace(tzinfo=None)
+    since = datetime.utcnow() - timedelta(days=days)
 
     client = get_jira_client()
     try:
