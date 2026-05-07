@@ -11,6 +11,7 @@ Two main public methods:
 - get_project_snapshot(...)      → input for Prompt 3 (Project Status Reasoning)
 """
 from __future__ import annotations
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -59,6 +60,9 @@ class UnmappedAuthor:
     display_name: str
     user_id: str
     email: str = ""
+    # Diagnostic — what lookup keys we tried (after normalisation), for the
+    # case where someone IS in the mapping but our matcher missed them.
+    lookup_attempts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -68,6 +72,9 @@ class JiraEngineerActivity:
     week_of: date
     by_engineer: dict[str, list[ActivityRecord]] = field(default_factory=dict)  # knox_id → records
     unmapped_authors: list[UnmappedAuthor] = field(default_factory=list)
+    # Diagnostic — the normalised lookup keys used during matching
+    lookup_keys_knox: list[str] = field(default_factory=list)
+    lookup_keys_name: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -208,9 +215,16 @@ class JiraClient:
         fields: Optional[str] = None,
         expand: Optional[str] = None,
     ) -> list[dict]:
-        """Paginated JQL search. Default JQL: project = X AND updated >= since."""
-        since_str = since.strftime("%Y-%m-%d")
+        """Paginated JQL search. Default JQL: project = X AND updated >= since.
+
+        `since` is formatted to minute precision (yyyy-MM-dd HH:mm) so that
+        JIRA matches the semantics of UI's relative -Nd queries; date-only
+        format makes JIRA snap to midnight in the server's TZ which can
+        introduce subtle off-by-day-boundary discrepancies.
+        """
+        since_str = since.strftime("%Y-%m-%d %H:%M")
         jql = f'project = "{project_key}" AND updated >= "{since_str}" ORDER BY updated DESC'
+        self._last_jql = jql  # exposed for debug/CLI
 
         out: list[dict] = []
         start = 0
@@ -273,12 +287,20 @@ class JiraClient:
         log = sync_log()
         sys = system_log()
 
-        # Build case-insensitive, whitespace-trimmed lookup tables.
-        # Knox IDs and display names are routinely written with different
-        # capitalisation in JIRA vs the mapping file ("Rahul Kumar" vs
-        # "Rahul kumar"); matching has to be tolerant of that.
+        # Build robust lookup tables. Strings coming from JIRA and from the
+        # mapping file frequently differ in:
+        #   - capitalisation ("Rahul Kumar" vs "Rahul kumar")
+        #   - whitespace (regular space vs NBSP \xa0, trailing spaces, tabs)
+        #   - Unicode form (precomposed vs decomposed accented characters)
+        # _norm collapses all of these so the comparison is robust.
         def _norm(s: str) -> str:
-            return (s or "").strip().lower()
+            if not s:
+                return ""
+            # NFKC: canonical compatibility decomposition, recomposed
+            s = unicodedata.normalize("NFKC", s)
+            # Replace any whitespace (including NBSP) with single ASCII space
+            s = " ".join(s.split())
+            return s.lower()
 
         lookup_by_knox: dict[str, dict] = {_norm(e["knox_id"]): e for e in engineers}
         lookup_by_name: dict[str, dict] = {_norm(e["name"]): e for e in engineers}
@@ -304,43 +326,68 @@ class JiraClient:
             log.error("jira search failed", extra={"project": project_key, "error": str(e)})
             raise
 
-        def _classify_author(u: dict) -> tuple[Optional[str], str, str]:
-            """Returns (knox_id_or_None, display_name, user_id).
+        def _classify_author(u: dict) -> tuple[Optional[str], str, str, list[str]]:
+            """Returns (knox_id_or_None, display_name, user_id, lookup_attempts).
 
             Matches the JIRA author against the engineer mapping using
-            case-insensitive, whitespace-trimmed comparison on:
-              1. accountId / key / username
-              2. emailAddress
-              3. displayName
+            normalised comparison. Tries ALL of the JIRA user object's
+            ID-shaped fields against the knox_id lookup (not just the
+            first non-empty one — JIRA Server/DC populates `key` with
+            an auto-generated 'JIRAUSER12345' string and `name` with the
+            actual username, so we must try `name` even when `key` exists).
+
+            lookup_attempts is the list of normalised lookup keys we tried,
+            useful for diagnosing 'why didn't this match' in the unmapped
+            author warning.
             """
             if not u:
-                return None, "", ""
+                return None, "", "", []
+
+            # For display in the unmapped warning we want a stable a_id
             a_id = u.get("accountId") or u.get("key") or u.get("name") or ""
             a_name = u.get("displayName") or u.get("name") or ""
             email = u.get("emailAddress", "") or ""
 
-            # 1 + 2: ID-shaped fields → look up by knox_id
-            for cand in (a_id, email):
-                if cand:
-                    e = lookup_by_knox.get(_norm(cand))
-                    if e:
-                        return e["knox_id"], a_name, a_id
+            attempts: list[str] = []
 
-            # 3: display name → look up by name
-            if a_name:
-                e = lookup_by_name.get(_norm(a_name))
+            # Try ALL ID-shaped fields, not just the first non-empty.
+            # On JIRA DC: 'key' is JIRAUSERxxxxx, 'name' is the actual
+            # username — both populated, but only 'name' typically matches knox_id.
+            id_candidates = [
+                ("accountId", u.get("accountId")),
+                ("key", u.get("key")),
+                ("name", u.get("name")),
+                ("emailAddress", u.get("emailAddress")),
+            ]
+            for field_name, value in id_candidates:
+                if not value:
+                    continue
+                normed = _norm(value)
+                attempts.append(f"{field_name}={value!r} → knox_id_lookup({normed!r})")
+                e = lookup_by_knox.get(normed)
                 if e:
-                    return e["knox_id"], a_name, a_id
+                    return e["knox_id"], a_name, a_id, attempts
 
-            return None, a_name, a_id
+            # Display name lookup (last resort)
+            if a_name:
+                normed = _norm(a_name)
+                attempts.append(f"displayName={a_name!r} → name_lookup({normed!r})")
+                e = lookup_by_name.get(normed)
+                if e:
+                    return e["knox_id"], a_name, a_id, attempts
+
+            return None, a_name, a_id, attempts
 
         def _add(knox_id: str, rec: ActivityRecord):
             result.by_engineer.setdefault(knox_id, []).append(rec)
 
-        def _record_unmapped(name: str, uid: str, email: str = ""):
+        def _record_unmapped(name: str, uid: str, email: str = "", attempts: Optional[list[str]] = None):
             key = uid or name
             if key and key not in unmapped_seen:
-                unmapped_seen[key] = UnmappedAuthor(display_name=name, user_id=uid, email=email)
+                unmapped_seen[key] = UnmappedAuthor(
+                    display_name=name, user_id=uid, email=email,
+                    lookup_attempts=attempts or [],
+                )
 
         def _in_week(ts: str) -> bool:
             """True if a JIRA timestamp falls within this report week."""
@@ -357,7 +404,7 @@ class JiraClient:
 
             # Creation
             created_ts = f.get("created", "")
-            knox, name, uid = _classify_author(f.get("reporter") or {})
+            knox, name, uid, attempts = _classify_author(f.get("reporter") or {})
             if _in_week(created_ts):
                 if knox:
                     _add(knox, ActivityRecord(
@@ -366,17 +413,17 @@ class JiraClient:
                         author_name=name, author_id=uid, timestamp=created_ts, url=url,
                     ))
                 elif name or uid:
-                    _record_unmapped(name, uid)
+                    _record_unmapped(name, uid, attempts=attempts)
 
             # Changelog
             for history in issue.get("changelog", {}).get("histories", []):
                 ts = history.get("created", "")
                 if not _in_week(ts):
                     continue
-                knox, name, uid = _classify_author(history.get("author") or {})
+                knox, name, uid, attempts = _classify_author(history.get("author") or {})
                 if not knox:
                     if name or uid:
-                        _record_unmapped(name, uid)
+                        _record_unmapped(name, uid, attempts=attempts)
                     continue
 
                 for item in history.get("items", []):
@@ -401,10 +448,10 @@ class JiraClient:
                     ts = c.get("created", "")
                     if not _in_week(ts):
                         continue
-                    knox, name, uid = _classify_author(c.get("author") or {})
+                    knox, name, uid, attempts = _classify_author(c.get("author") or {})
                     if not knox:
                         if name or uid:
-                            _record_unmapped(name, uid)
+                            _record_unmapped(name, uid, attempts=attempts)
                         continue
                     body = c.get("body")
                     text = _adf_to_text(body) if isinstance(body, dict) else str(body or "")
@@ -423,10 +470,10 @@ class JiraClient:
                     ts = w.get("started", "") or w.get("created", "")
                     if not _in_week(ts):
                         continue
-                    knox, name, uid = _classify_author(w.get("author") or {})
+                    knox, name, uid, attempts = _classify_author(w.get("author") or {})
                     if not knox:
                         if name or uid:
-                            _record_unmapped(name, uid)
+                            _record_unmapped(name, uid, attempts=attempts)
                         continue
                     time_spent = w.get("timeSpent", "")
                     comment = w.get("comment")
@@ -442,6 +489,9 @@ class JiraClient:
                 sys.warning("jira get_worklogs failed", extra={"task": key, "error": str(e)})
 
         result.unmapped_authors = list(unmapped_seen.values())
+        # Stash the lookup keys on the result for CLI diagnostics
+        result.lookup_keys_knox = list(lookup_by_knox.keys())
+        result.lookup_keys_name = list(lookup_by_name.keys())
 
         sys.info(
             "jira collect_engineer_activity done",

@@ -108,15 +108,19 @@ def whoami_confluence():
 @click.option("--days", default=7, type=int, help="Issues updated in last N days (default: 7)")
 @click.option("--issue-types", default=None,
               help="Comma-separated types to filter, e.g. 'Task,Story,Bug'")
-@click.option("--show", default=10, type=int, help="How many to print (default: 10)")
-def jira_search(project_key, days, issue_types, show):
+@click.option("--show", default=50, type=int, help="How many to print (default: 50; use --all)")
+@click.option("--all", "show_all", is_flag=True, help="Print all fetched issues regardless of --show")
+def jira_search(project_key, days, issue_types, show, show_all):
     """Run the recent-issues JQL search for a project. Verifies the JIRA path
     we'll use for the Aggregation Engine."""
     from datetime import datetime, timedelta
     from app.clients import get_jira_client
+    from app.utils.dates import now_ist
 
     types = [t.strip() for t in issue_types.split(",")] if issue_types else None
-    since = datetime.utcnow() - timedelta(days=days)
+    # Use IST (project TZ per NFR Phase 1) for the since calculation, drop tz
+    # for JQL since JIRA expects naive in server time.
+    since = (now_ist() - timedelta(days=days)).replace(tzinfo=None)
 
     client = get_jira_client()
     try:
@@ -125,16 +129,21 @@ def jira_search(project_key, days, issue_types, show):
         click.echo(f"[FAIL] {e}", err=True)
         sys.exit(1)
 
-    click.echo(f"[OK] {len(issues)} issue(s) updated in last {days} day(s) in {project_key}"
+    click.echo(f"JQL: {getattr(client, '_last_jql', '<unknown>')}")
+    click.echo(f"[OK] {len(issues)} issue(s) returned in last {days} day(s) in {project_key}"
                + (f" (filtered to {types})" if types else ""))
-    for i in issues[:show]:
+    limit = len(issues) if show_all else show
+    for i in issues[:limit]:
         f = i.get("fields", {})
         itype = (f.get("issuetype") or {}).get("name", "?")
         status = (f.get("status") or {}).get("name", "?")
-        assignee = (f.get("assignee") or {}).get("displayName", "-")
+        assignee_obj = f.get("assignee") or {}
+        assignee = assignee_obj.get("displayName", "-")
         summary = f.get("summary", "")
         click.echo(f"  {i['key']:14s} {itype:10s} [{status:14s}] "
                    f"assignee={assignee[:20]:20s} — {summary[:60]}")
+    if len(issues) > limit:
+        click.echo(f"  ... ({len(issues) - limit} more not shown — pass --all to see them)")
 
 
 @cli.command("jira-snapshot")
@@ -305,8 +314,14 @@ def jira_activity(project_key, week_of, engineers_file, issue_types):
         click.echo("")
         click.echo(f"[WARN] {len(activity.unmapped_authors)} unmapped JIRA author(s) "
                    "observed (not in engineer mapping):")
+        click.echo(f"  Lookup tables we matched against (after normalisation):")
+        click.echo(f"    knox_id keys: {activity.lookup_keys_knox}")
+        click.echo(f"    name keys:    {activity.lookup_keys_name}")
+        click.echo("")
         for u in activity.unmapped_authors[:10]:
-            click.echo(f"    {u.display_name} (id={u.user_id})")
+            click.echo(f"  - {u.display_name!r} (id={u.user_id!r})")
+            for line in u.lookup_attempts:
+                click.echo(f"      tried: {line}")
         if len(activity.unmapped_authors) > 10:
             click.echo(f"    … and {len(activity.unmapped_authors) - 10} more")
 

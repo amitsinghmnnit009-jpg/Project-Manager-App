@@ -147,6 +147,121 @@ def test_jira_collect_activity_case_insensitive_name_match():
 
 
 @responses.activate
+def test_jira_collect_activity_dc_user_shape():
+    """JIRA Server/DC populates user objects like:
+        {'key': 'JIRAUSER157459', 'name': 'rahul22.k', 'displayName': 'Rahul Kumar'}
+    Knox_id is in 'name', not 'key'. Old matcher used the first non-empty
+    among (accountId, key, name) as a_id and never tried 'name' separately,
+    so 'JIRAUSER157459' got the lookup and missed. New matcher tries ALL
+    fields against knox_id lookup."""
+    from datetime import date, datetime, timedelta
+    from app.clients.jira_client import JiraClient
+
+    issue = {
+        "key": "PROJ-1",
+        "fields": {
+            "summary": "Test",
+            "status": {"name": "In Progress"},
+            "issuetype": {"name": "Task"},
+            "assignee": None,
+            "reporter": None,
+            "created": "2026-04-01T10:00:00.000+0530",
+            "updated": "2026-05-05T10:00:00.000+0530",
+        },
+        "changelog": {"histories": []},
+    }
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/search",
+        json={"issues": [issue], "total": 1},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/issue/PROJ-1/comment",
+        json={"comments": [{
+            "created": "2026-05-06T10:00:00.000+0530",
+            "author": {
+                "key": "JIRAUSER157459",     # JIRA DC auto-generated
+                "name": "rahul22.k",          # actual username = our knox_id
+                "displayName": "Rahul Kumar",
+            },
+            "body": "ran tests, all green",
+        }]},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/issue/PROJ-1/worklog",
+        json={"worklogs": []},
+        status=200,
+    )
+
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    engineers = [{"name": "Rahul Kumar", "knox_id": "rahul22.k"}]
+
+    # Pick a Monday so the comment falls within the report week
+    week_of = (datetime.now().date() - timedelta(days=datetime.now().weekday()))
+
+    activity = client.collect_engineer_activity("PROJ", week_of, engineers)
+
+    assert "rahul22.k" in activity.by_engineer, \
+        f"expected rahul22.k in by_engineer, got {list(activity.by_engineer.keys())} " \
+        f"and unmapped={[u.display_name for u in activity.unmapped_authors]}"
+    assert activity.unmapped_authors == []
+
+
+@responses.activate
+def test_jira_collect_activity_handles_nbsp_in_name():
+    """JIRA returns 'Rahul Kumar' (non-breaking space) but mapping has
+    'Rahul Kumar' (regular space). Normalisation must collapse the NBSP."""
+    from datetime import datetime, timedelta
+    from app.clients.jira_client import JiraClient
+
+    issue = {
+        "key": "PROJ-1",
+        "fields": {
+            "summary": "Test",
+            "status": {"name": "Open"},
+            "issuetype": {"name": "Task"},
+            "assignee": None, "reporter": None,
+            "created": "2026-04-01T10:00:00.000+0530",
+            "updated": "2026-05-05T10:00:00.000+0530",
+        },
+        "changelog": {"histories": []},
+    }
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/search",
+        json={"issues": [issue], "total": 1},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/issue/PROJ-1/comment",
+        json={"comments": [{
+            "created": "2026-05-06T10:00:00.000+0530",
+            "author": {"displayName": "Rahul Kumar"},  # NBSP between
+            "body": "fixed",
+        }]},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/issue/PROJ-1/worklog",
+        json={"worklogs": []}, status=200,
+    )
+
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    engineers = [{"name": "Rahul Kumar", "knox_id": "RK"}]
+    week_of = (datetime.now().date() - timedelta(days=datetime.now().weekday()))
+
+    activity = client.collect_engineer_activity("PROJ", week_of, engineers)
+    assert "RK" in activity.by_engineer
+    assert activity.unmapped_authors == []
+
+
+@responses.activate
 def test_jira_search_filters_by_issue_type():
     responses.add(
         responses.GET,
