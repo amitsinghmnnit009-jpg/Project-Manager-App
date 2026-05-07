@@ -100,6 +100,7 @@ class ConfluenceClient:
         ca_bundle: str = "",
         enable_http_logging: bool = False,
         request_delay_seconds: float = 10.0,
+        retry_total: int = 1,
     ):
         if not base_url:
             raise ValueError("Confluence base_url is required (set confluence.base_url in config.yaml)")
@@ -125,6 +126,7 @@ class ConfluenceClient:
             ca_bundle=ca_bundle,
             headers=headers,
             enable_http_logging=enable_http_logging,
+            retry_total=retry_total,
         )
 
     # ---------- low-level ------------------------------------------------

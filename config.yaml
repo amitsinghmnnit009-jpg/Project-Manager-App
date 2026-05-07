@@ -42,6 +42,8 @@ jira:
   verify_ssl: true
   ca_bundle: ""               # optional path to corporate CA bundle (.pem/.crt)
   enable_http_logging: false  # log every request/response (debug only)
+  # Max retries per request. 0 = single attempt. 6 = up to 7 attempts.
+  retry_total: 6
 
 # --- Confluence Data Center -------------------------------------------------
 confluence:
@@ -51,6 +53,11 @@ confluence:
   ca_bundle: ""
   enable_http_logging: false
   request_delay_seconds: 10   # baked-in delay between requests (rate-limit safety)
+  # Lower for Confluence — DC instances often rate-limit aggressively, and
+  # high retry counts burn the per-token bucket faster than it refills.
+  # 0 = single attempt only (strictest, recommended while debugging 429s).
+  # 1 = single retry (safe default for normal use).
+  retry_total: 1
 
 # --- Database (Phase 1: SQLite, swap to PostgreSQL later via SQLAlchemy URL) -
 database:

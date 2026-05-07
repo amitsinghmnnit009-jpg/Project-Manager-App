@@ -43,6 +43,8 @@ class JiraConfig(BaseModel):
     verify_ssl: bool = True
     ca_bundle: str = ""
     enable_http_logging: bool = False
+    # urllib3 Retry total. 0 = no retries (1 attempt only). 6 = up to 7 attempts.
+    retry_total: int = 6
 
 
 class ConfluenceConfig(BaseModel):
@@ -52,6 +54,9 @@ class ConfluenceConfig(BaseModel):
     ca_bundle: str = ""
     enable_http_logging: bool = False
     request_delay_seconds: float = 10.0
+    # Confluence DC rate-limits aggressively — a high retry count can burn
+    # the per-token bucket faster than it refills. Default low.
+    retry_total: int = 1
 
 
 class DatabaseConfig(BaseModel):

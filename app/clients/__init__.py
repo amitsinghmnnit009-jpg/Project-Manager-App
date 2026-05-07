@@ -38,6 +38,7 @@ def get_jira_client():
         verify_ssl=cfg.verify_ssl,
         ca_bundle=cfg.ca_bundle,
         enable_http_logging=cfg.enable_http_logging,
+        retry_total=cfg.retry_total,
     )
 
 
@@ -52,4 +53,5 @@ def get_confluence_client():
         ca_bundle=cfg.ca_bundle,
         enable_http_logging=cfg.enable_http_logging,
         request_delay_seconds=cfg.request_delay_seconds,
+        retry_total=cfg.retry_total,
     )

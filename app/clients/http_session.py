@@ -189,6 +189,7 @@ def build_session(
     ca_bundle: str,
     headers: dict,
     enable_http_logging: bool = False,
+    retry_total: int = 6,
 ) -> requests.Session:
     """Build a requests.Session with retry + corporate-CA + optional logging.
 
@@ -197,6 +198,8 @@ def build_session(
         ca_bundle: Optional path to a corporate CA bundle (overrides verify_ssl)
         headers: Headers attached to every request (including Authorization)
         enable_http_logging: When True, every request/response is logged
+        retry_total: Max retries per request. 0 means single attempt only.
+                     Lower values for endpoints with aggressive rate limits.
     """
     s = requests.Session()
     s.headers.update(headers)
@@ -205,11 +208,13 @@ def build_session(
     if not verify_ssl and not ca_bundle:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+    # Cap connect/read retries at retry_total — they shouldn't exceed the global
+    # budget. status retries also bound by retry_total.
     retry = _LoggingRetry(
-        total=6,
-        connect=3,
-        read=3,
-        status=6,
+        total=retry_total,
+        connect=min(3, retry_total),
+        read=min(3, retry_total),
+        status=retry_total,
         backoff_factor=2.0,
         backoff_max=60,
         status_forcelist=(429, 502, 503, 504),

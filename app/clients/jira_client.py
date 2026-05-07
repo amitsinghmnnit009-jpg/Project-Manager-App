@@ -171,6 +171,7 @@ class JiraClient:
         verify_ssl: bool = True,
         ca_bundle: str = "",
         enable_http_logging: bool = False,
+        retry_total: int = 6,
     ):
         if not base_url:
             raise ValueError("JIRA base_url is required (set jira.base_url in config.yaml)")
@@ -190,6 +191,7 @@ class JiraClient:
             ca_bundle=ca_bundle,
             headers=headers,
             enable_http_logging=enable_http_logging,
+            retry_total=retry_total,
         )
 
     # ---------- low-level ------------------------------------------------
