@@ -9,6 +9,7 @@ Usage:
     python manage.py jira-snapshot <project_key>         # Project snapshot (counts/overdue/recent)
     python manage.py jira-task <issue_key>               # Comments + worklogs of one task
     python manage.py jira-activity <project_key>         # Engineer-grouped weekly activity
+    python manage.py show-mapping [project_key]          # Diagnostic: see parsed engineer mapping
     python manage.py fetch-confluence-page <url>         # Fetch+parse a Confluence project page
 """
 from __future__ import annotations
@@ -233,15 +234,22 @@ def jira_activity(project_key, week_of, engineers_file, issue_types):
         click.echo(f"[FAIL] mapping file not found: {mapping_path}", err=True)
         sys.exit(1)
 
+    # Match case-insensitively + whitespace-trimmed — JIRA project keys are
+    # conventionally uppercase but people type them with various casing on CLI.
+    pk_norm = project_key.strip().lower()
     assigned_ids = set()
     for asn in mapping.get("assignments", []):
-        if project_key in asn.get("projects", []):
-            assigned_ids.add(asn["knox_id"])
+        for p in asn.get("projects", []):
+            if str(p).strip().lower() == pk_norm:
+                assigned_ids.add(asn["knox_id"])
+                break
 
+    # Also case-insensitive match on knox_id when filtering engineers list
+    assigned_ids_norm = {x.strip().lower() for x in assigned_ids}
     engineers = [
         {"name": e["name"], "knox_id": e["knox_id"]}
         for e in mapping.get("engineers", [])
-        if e["knox_id"] in assigned_ids
+        if e["knox_id"].strip().lower() in assigned_ids_norm
     ]
 
     if not engineers:
@@ -301,6 +309,78 @@ def jira_activity(project_key, week_of, engineers_file, issue_types):
             click.echo(f"    {u.display_name} (id={u.user_id})")
         if len(activity.unmapped_authors) > 10:
             click.echo(f"    … and {len(activity.unmapped_authors) - 10} more")
+
+
+@cli.command("show-mapping")
+@click.argument("project_key", required=False)
+@click.option("--engineers-file", default=None,
+              help="Path to engineer mapping JSON. Defaults to config.engineers.mapping_file.")
+def show_mapping(project_key, engineers_file):
+    """Show the parsed engineer mapping. Diagnostic for 'no engineers assigned' issues.
+
+    Without arguments: lists all engineers and their project assignments.
+    With <project_key>: shows which engineers are assigned to that project
+    (using the same case-insensitive match logic the real pipeline uses).
+    """
+    import json
+    from app.config import get_config
+
+    cfg = get_config()
+    mapping_path = engineers_file or cfg.engineers.mapping_file
+    try:
+        with open(mapping_path, "r", encoding="utf-8") as f:
+            mapping = json.load(f)
+    except FileNotFoundError:
+        click.echo(f"[FAIL] mapping file not found: {mapping_path}", err=True)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        click.echo(f"[FAIL] mapping file is invalid JSON: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Mapping file: {mapping_path}")
+    click.echo(f"Top-level keys: {list(mapping.keys())}")
+    click.echo("")
+
+    engineers_list = mapping.get("engineers", [])
+    assignments_list = mapping.get("assignments", [])
+
+    click.echo(f"Engineers loaded ({len(engineers_list)}):")
+    for e in engineers_list:
+        keys = list(e.keys())
+        name = e.get("name", "?")
+        knox = e.get("knox_id", "?")
+        extra = "" if set(keys) == {"name", "knox_id"} else f"  [extra keys: {keys}]"
+        click.echo(f"  name={name!r:30s} knox_id={knox!r}{extra}")
+
+    click.echo("")
+    click.echo(f"Assignments loaded ({len(assignments_list)}):")
+    for asn in assignments_list:
+        keys = list(asn.keys())
+        knox = asn.get("knox_id", "?")
+        projects = asn.get("projects", [])
+        extra = "" if set(keys) == {"knox_id", "projects"} else f"  [extra keys: {keys}]"
+        click.echo(f"  knox_id={knox!r:25s} projects={projects}{extra}")
+
+    if project_key:
+        click.echo("")
+        click.echo(f"=== Engineers matching project_key={project_key!r} (case-insensitive) ===")
+        pk_norm = project_key.strip().lower()
+        matched_knox = set()
+        for asn in assignments_list:
+            for p in asn.get("projects", []):
+                if str(p).strip().lower() == pk_norm:
+                    matched_knox.add(asn["knox_id"])
+                    break
+        if not matched_knox:
+            click.echo(f"  (none)")
+            click.echo(f"")
+            click.echo(f"  Tip: check that '{project_key}' (or any case-insensitive variant)")
+            click.echo(f"       appears literally inside one of the projects[] arrays above.")
+        else:
+            matched_norm = {k.strip().lower() for k in matched_knox}
+            for e in engineers_list:
+                if e.get("knox_id", "").strip().lower() in matched_norm:
+                    click.echo(f"  - {e.get('name')} ({e.get('knox_id')})")
 
 
 @cli.command("fetch-confluence-page")
