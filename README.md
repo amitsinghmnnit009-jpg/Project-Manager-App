@@ -27,12 +27,13 @@ Project-Manager-App/
 ├── pyproject.toml          # Python project + dependencies
 ├── README.md               # This file
 ├── .gitignore
-├── config.yaml             # All runtime configuration (URLs, tokens, paths)
+├── config.json             # All runtime configuration (URLs, tokens, paths)
+├── config.example.json     # Reference example showing every supported field
 ├── manage.py               # CLI: reset-db, run-aggregation, run-status, etc.
 │
 ├── app/                    # Application package
 │   ├── __init__.py
-│   ├── config.py           # Loads + validates config.yaml
+│   ├── config.py           # Loads + validates config.json
 │   ├── db.py               # SQLAlchemy engine + session factory
 │   ├── models.py           # SQLAlchemy ORM tables
 │   │
@@ -76,7 +77,7 @@ Project-Manager-App/
 │
 ├── data/                   # Editable data files
 │   ├── engineer_project_mapping.json
-│   ├── holidays_ist_2026.yaml
+│   ├── holidays_ist_2026.json
 │   └── report_template_default.md
 │
 ├── logs/                   # Runtime logs (JSONL); gitignored
@@ -106,14 +107,14 @@ pip install -e ".[dev]"
 
 ## Configure
 
-Edit `config.yaml`:
+Edit `config.json` (a fully-populated reference is in `config.example.json`):
 
 1. Set `jira.base_url` and `jira.token`
 2. Set `confluence.base_url` and `confluence.token`
 3. Set `llm.provider` to `ollama` or `openai` and the corresponding URL/model
-4. Add your projects under the `projects:` list (see example in the file)
+4. Add your projects under the `projects` array (see `config.example.json` for the full shape)
 5. Edit `data/engineer_project_mapping.json` to map engineers to projects
-6. Edit `data/holidays_ist_2026.yaml` with your holiday calendar
+6. Edit `data/holidays_ist_2026.json` with your holiday calendar
 
 ---
 

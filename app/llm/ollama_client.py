@@ -1,7 +1,7 @@
 """Ollama LLM client.
 
 Calls a local Ollama server via the `ollama` Python package. Reads URL/model
-from config.yaml's llm.ollama section. Used when llm.provider == 'ollama'.
+from config.json's llm.ollama section. Used when llm.provider == 'ollama'.
 
 Logs every call (model, duration, token counts, response excerpt) to
 logs/ai_compute.jsonl per NFR §6 observability.

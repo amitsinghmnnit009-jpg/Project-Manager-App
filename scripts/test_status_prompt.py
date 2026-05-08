@@ -46,17 +46,17 @@ PROMPT_FILE = "project_status_reasoning_v2"
 # ---------- Project lookup ------------------------------------------------
 
 def find_project(cfg, code: str):
-    """Find a project by `code` in config.yaml's projects: list."""
+    """Find a project by `code` in config.json's projects: list."""
     norm = code.strip().lower()
     for p in cfg.projects:
         if p.code.strip().lower() == norm:
             return p
-    print(f"[FAIL] Project code {code!r} not found in config.yaml's projects: list.")
+    print(f"[FAIL] Project code {code!r} not found in config.json's projects: list.")
     available = [p.code for p in cfg.projects]
     if available:
         print(f"       Available codes: {available}")
     else:
-        print(f"       Your projects: list is empty. Add at least one project entry — see config.yaml example.")
+        print(f"       Your projects: list is empty. Add at least one project entry — see config.json example.")
     sys.exit(2)
 
 
@@ -266,7 +266,7 @@ def main():
         description="Standalone Prompt 3 test — end-to-end on one real project."
     )
     parser.add_argument("--project-code", required=True,
-                        help="Project code (matches config.yaml projects[].code)")
+                        help="Project code (matches config.json projects[].code)")
     parser.add_argument("--save-to", default=None,
                         help="Output JSONL path (default: logs/prompt3_<code>_<ts>.jsonl)")
     parser.add_argument("--n-reports", type=int, default=4,

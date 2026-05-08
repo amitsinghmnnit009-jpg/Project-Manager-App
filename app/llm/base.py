@@ -1,7 +1,7 @@
 """LLM client interface — implemented by ollama_client and openai_client.
 
 Step 3 fills these in. Aggregation/highlights/status engines depend ONLY on
-this interface so the implementation can be swapped via config.yaml.
+this interface so the implementation can be swapped via config.json.
 """
 from __future__ import annotations
 from abc import ABC, abstractmethod
@@ -51,7 +51,7 @@ class LLMClient(ABC):
 def get_llm_client() -> LLMClient:
     """Factory — returns the configured LLM client.
 
-    Reads llm.provider from config.yaml. Implemented in Step 3.
+    Reads llm.provider from config.json. Implemented in Step 3.
     """
     from app.config import get_config
     cfg = get_config()

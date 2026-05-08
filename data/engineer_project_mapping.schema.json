@@ -37,7 +37,7 @@
           },
           "projects": {
             "type": "array",
-            "description": "List of project codes (matching config.yaml projects[].code)",
+            "description": "List of project codes (matching config.json projects[].code)",
             "items": { "type": "string" },
             "minItems": 1
           }

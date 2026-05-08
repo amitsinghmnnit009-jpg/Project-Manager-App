@@ -1,6 +1,6 @@
-"""Project registry — sync from config.yaml to DB at startup (Step 5 — STUB).
+"""Project registry — sync from config.json to DB at startup (Step 5 — STUB).
 
-Reads `projects` list from config.yaml and upserts into the `projects`
+Reads `projects` list from config.json and upserts into the `projects`
 table. Provides lookup helpers for other modules.
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ from app.config import ProjectConfig
 
 
 def sync_projects_from_config() -> int:
-    """Read config.yaml projects list, upsert into DB. Returns count synced."""
+    """Read config.json projects list, upsert into DB. Returns count synced."""
     raise NotImplementedError("Step 5")
 
 

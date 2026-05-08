@@ -155,9 +155,9 @@ class ConfluenceClient:
         retry_total: int = 1,
     ):
         if not base_url:
-            raise ValueError("Confluence base_url is required (set confluence.base_url in config.yaml)")
+            raise ValueError("Confluence base_url is required (set confluence.base_url in config.json)")
         if not token:
-            raise ValueError("Confluence token is required (set confluence.token in config.yaml)")
+            raise ValueError("Confluence token is required (set confluence.token in config.json)")
 
         base = base_url.rstrip("/")
         # Atlassian Cloud puts Confluence at /wiki — DC usually doesn't.

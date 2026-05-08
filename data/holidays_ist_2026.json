@@ -1,0 +1,14 @@
+{
+  "_README": "Holiday calendar (IST). The system uses the calendar named in config.json's holidays.default_calendar_id. A project can override via its holiday_calendar_id field. Per FR §B.7.3, a holiday WEEK (a week containing any of these dates) auto-skips weekly aggregation.",
+  "calendars": {
+    "default": {
+      "description": "India national holidays + corporate holidays for 2026 (FILL ME IN)",
+      "holidays": [
+        {"date": "2026-01-26", "name": "Republic Day"},
+        {"date": "2026-08-15", "name": "Independence Day"},
+        {"date": "2026-10-02", "name": "Gandhi Jayanti"},
+        {"date": "2026-12-25", "name": "Christmas Day"}
+      ]
+    }
+  }
+}

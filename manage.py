@@ -40,8 +40,8 @@ def reset_db():
 
 
 @cli.command("serve")
-@click.option("--host", default=None, help="Override host from config.yaml")
-@click.option("--port", default=None, type=int, help="Override port from config.yaml")
+@click.option("--host", default=None, help="Override host from config.json")
+@click.option("--port", default=None, type=int, help="Override port from config.json")
 @click.option("--reload", is_flag=True, help="Auto-reload on code change (dev only)")
 def serve(host, port, reload):
     """Start the FastAPI server using uvicorn."""
@@ -491,7 +491,7 @@ def confluence_probe(path, params):
 
     cfg = get_config().confluence
     if not cfg.base_url or not cfg.token:
-        click.echo("[FAIL] confluence.base_url and confluence.token must be set in config.yaml", err=True)
+        click.echo("[FAIL] confluence.base_url and confluence.token must be set in config.json", err=True)
         sys.exit(1)
 
     base = cfg.base_url.rstrip("/")

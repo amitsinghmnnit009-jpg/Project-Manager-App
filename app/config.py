@@ -1,13 +1,18 @@
-"""Loads and validates config.yaml.
+"""Loads and validates config.json.
 
 Single source of truth for runtime configuration. Other modules call
-`get_config()` and read attributes; never re-parse the YAML.
+`get_config()` and read attributes; never re-parse the file.
+
+Phase 1 used config.yaml originally; switched to JSON because YAML's
+indentation rules surprise non-developer admins editing the file by
+hand. Pydantic is the validation layer either way — JSON's stricter
+syntax just produces clearer error messages when the file is malformed.
 """
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Literal
 from functools import lru_cache
-import yaml
+import json
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -103,7 +108,7 @@ class EngineersConfig(BaseModel):
 
 
 class HolidaysConfig(BaseModel):
-    calendar_file: str = "./data/holidays_ist_2026.yaml"
+    calendar_file: str = "./data/holidays_ist_2026.json"
     default_calendar_id: str = "default"
 
 
@@ -159,17 +164,28 @@ class AppConfig(BaseModel):
 
 # --- Loader ---------------------------------------------------------------
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
 
 @lru_cache(maxsize=1)
 def get_config(path: Optional[Path] = None) -> AppConfig:
-    """Load and validate config.yaml. Cached after first call."""
+    """Load and validate config.json. Cached after first call.
+
+    JSON parse errors include line:column markers, so a malformed file
+    surfaces a precise location in the traceback rather than a vague
+    structural complaint. Empty file is treated as `{}` (validation
+    then falls through to defaults for every section).
+    """
     p = path or CONFIG_PATH
     if not p.exists():
         raise FileNotFoundError(f"Config file not found: {p}")
     with open(p, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+        text = f.read()
+    raw = json.loads(text) if text.strip() else {}
+    if not isinstance(raw, dict):
+        raise TypeError(
+            f"Config file must contain a JSON object at the top level, got {type(raw).__name__}"
+        )
     return AppConfig(**raw)
 
 

@@ -1,0 +1,127 @@
+{
+  "_README": "Reference example showing every supported field. DO NOT use this file directly. Copy values you need into config.json. Lines starting with _ are documentation-only keys (Pydantic ignores unknown keys, so they are harmless).",
+
+  "llm": {
+    "_help": "provider chooses which LLM client get_llm_client() returns. ollama hits a local Ollama server; openai hits any OpenAI-compatible endpoint (real OpenAI, internal company gateway, vLLM, etc.).",
+    "provider": "openai",
+    "ollama": {
+      "base_url": "http://localhost:11434",
+      "model": "gpt-oss:latest",
+      "embed_model": "nomic-embed-text",
+      "timeout_seconds": 600
+    },
+    "openai": {
+      "base_url": "https://your-internal-gateway.example.com/v1",
+      "model": "gpt-oss:latest",
+      "embed_model": "nomic-embed-text",
+      "timeout_seconds": 600,
+      "api_key": "leave-empty-if-using-header-auth",
+      "custom_headers": {
+        "x-dep-ticket": "credential:YOUR-TICKET-VALUE",
+        "User-Type": "AD_ID",
+        "User-Id": "your.knox_id",
+        "Send-System-Name": "project-manager-app"
+      }
+    },
+    "temperature": 0.2
+  },
+
+  "jira": {
+    "_help": "JIRA Data Center. token is a Personal Access Token from your JIRA profile. Set verify_ssl=false for corporate self-signed certs, or point ca_bundle at your corporate CA .pem file.",
+    "base_url": "https://jira.yourcompany.local",
+    "token": "PASTE_YOUR_JIRA_PAT_HERE",
+    "api_version": "2",
+    "verify_ssl": false,
+    "ca_bundle": "",
+    "enable_http_logging": false,
+    "retry_total": 6
+  },
+
+  "confluence": {
+    "_help": "Confluence Data Center. Same auth pattern as JIRA. retry_total kept low (1) because Confluence DC tends to apply per-token rate-limit overrides; high retries burn the token's bucket. extra_page_max_chars caps each optional context page in the Status prompt.",
+    "base_url": "https://confluence.yourcompany.local",
+    "token": "PASTE_YOUR_CONFLUENCE_PAT_HERE",
+    "verify_ssl": false,
+    "ca_bundle": "",
+    "enable_http_logging": false,
+    "request_delay_seconds": 10,
+    "retry_total": 1,
+    "extra_page_max_chars": 3000
+  },
+
+  "database": {
+    "url": "sqlite:///./app.db"
+  },
+
+  "logging": {
+    "directory": "./logs",
+    "level": "INFO",
+    "rotate_max_bytes": 10485760,
+    "rotate_backups": 10
+  },
+
+  "scheduler": {
+    "status_recompute_cadence": "daily",
+    "weekly_aggregation_offset_minutes": 5,
+    "timezone": "Asia/Kolkata"
+  },
+
+  "email": {
+    "mock": true,
+    "mock_log_path": "./logs/sent_emails.jsonl",
+    "smtp_host": "",
+    "smtp_port": 25,
+    "from_address": "project-manager-app@noreply.local"
+  },
+
+  "reminders": {
+    "hours_before_cutoff": 24,
+    "hours_after_cutoff": 4
+  },
+
+  "reports": {
+    "retention_weeks": 4,
+    "default_template_path": "./data/report_template_default.md"
+  },
+
+  "engineers": {
+    "mapping_file": "./data/engineer_project_mapping.json"
+  },
+
+  "holidays": {
+    "calendar_file": "./data/holidays_ist_2026.json",
+    "default_calendar_id": "default"
+  },
+
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8000
+  },
+
+  "projects": [
+    {
+      "_help": "Required: code, name, jira_project_key, confluence_milestones_url, confluence_fr_url. Everything else inherits global defaults if omitted. confluence_extra_pages is optional; the AI uses these as supplementary context only and may NOT derive milestones or FRs from them.",
+      "code": "ASPICE",
+      "name": "ASPICE Compliance Programme",
+      "type": "process",
+      "description": "Automotive software process improvement programme.",
+      "owning_tl": "Some TL",
+      "owning_pgm": "You",
+      "start_date": "2026-01-15",
+      "planned_end_date": "2026-12-31",
+      "jira_project_key": "ASPICE",
+      "confluence_milestones_url": "https://confluence.yourcompany.local/spaces/SPACE/pages/3540509142/ASPICE+Milestones",
+      "confluence_fr_url": "https://confluence.yourcompany.local/spaces/SPACE/pages/3540509999/ASPICE+Functional+Requirements",
+      "confluence_extra_pages": [
+        "https://confluence.yourcompany.local/spaces/SPACE/pages/12347/Vendor+SDK+Notes",
+        "https://confluence.yourcompany.local/spaces/SPACE/pages/12348/Architecture+Overview"
+      ],
+      "weekly_cutoff": "Mon 13:00",
+      "week_boundary": "monday",
+      "recompute_cadence": "daily",
+      "issue_types": ["Task", "Sub-task", "Story", "Bug"],
+      "chronic_threshold": 3,
+      "holiday_calendar_id": "default"
+    }
+  ]
+}

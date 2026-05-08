@@ -174,9 +174,9 @@ class JiraClient:
         retry_total: int = 6,
     ):
         if not base_url:
-            raise ValueError("JIRA base_url is required (set jira.base_url in config.yaml)")
+            raise ValueError("JIRA base_url is required (set jira.base_url in config.json)")
         if not token:
-            raise ValueError("JIRA token is required (set jira.token in config.yaml)")
+            raise ValueError("JIRA token is required (set jira.token in config.json)")
 
         self.base = base_url.rstrip("/")
         self.api = f"/rest/api/{api_version}"

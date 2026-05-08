@@ -1,7 +1,7 @@
 """SQLAlchemy engine + session factory + reset helper.
 
 Phase 1 uses SQLite. To switch to PostgreSQL later, change `database.url`
-in config.yaml — no code changes needed.
+in config.json — no code changes needed.
 """
 from __future__ import annotations
 from contextlib import contextmanager

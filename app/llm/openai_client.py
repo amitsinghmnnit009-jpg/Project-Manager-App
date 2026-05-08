@@ -2,7 +2,7 @@
 
 Uses the `openai` Python SDK pointed at an internal OpenAI-compatible endpoint
 (your company's hosted gpt-oss gateway, vLLM, internal Ollama proxy, etc.).
-Supports custom auth headers per config.yaml (header-based auth on internal
+Supports custom auth headers per config.json (header-based auth on internal
 gateways that don't use the OpenAI Bearer token convention).
 
 Used when llm.provider == 'openai'. Logs every call to logs/ai_compute.jsonl

@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models — Phase 1 schema.
 
 Tables (per BACKEND_ARCHITECTURE_PHASE1.md §5):
-- Project                  — projects synced from config.yaml at startup
+- Project                  — projects synced from config.json at startup
 - WeeklyReport             — AI-generated consolidated reports
 - ProjectStatus            — latest AI status per project (one row per project)
 - ProjectStatusHistory     — append-only timeline of status changes

@@ -31,7 +31,7 @@ __all__ = [
 
 
 def get_jira_client():
-    """Build a JiraClient from current config.yaml. Cached factory could be
+    """Build a JiraClient from current config.json. Cached factory could be
     added later if construction cost becomes noticeable."""
     from app.config import get_config
     cfg = get_config().jira
@@ -47,7 +47,7 @@ def get_jira_client():
 
 
 def get_confluence_client():
-    """Build a ConfluenceClient from current config.yaml."""
+    """Build a ConfluenceClient from current config.json."""
     from app.config import get_config
     cfg = get_config().confluence
     return ConfluenceClient(

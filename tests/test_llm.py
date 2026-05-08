@@ -35,7 +35,7 @@ def test_get_llm_client_returns_a_concrete_client():
 
 
 def test_get_llm_client_routes_ollama(monkeypatch):
-    """provider=ollama → OllamaClient, regardless of local config.yaml."""
+    """provider=ollama → OllamaClient, regardless of local config.json."""
     import app.config as config_mod
     from app.llm import base as base_mod
     from app.llm.ollama_client import OllamaClient
@@ -50,7 +50,7 @@ def test_get_llm_client_routes_ollama(monkeypatch):
 
 
 def test_get_llm_client_routes_openai(monkeypatch):
-    """provider=openai → OpenAICompatibleClient, regardless of local config.yaml."""
+    """provider=openai → OpenAICompatibleClient, regardless of local config.json."""
     import app.config as config_mod
     from app.llm import base as base_mod
     from app.llm.openai_client import OpenAICompatibleClient
@@ -96,7 +96,7 @@ def test_ollama_complete_extracts_text_and_tokens(mock_client_cls):
     assert res.prompt_tokens == 12
     assert res.completion_tokens == 3
     assert res.duration_seconds >= 0
-    assert res.model.startswith("gpt-oss")  # whatever's in config.yaml
+    assert res.model.startswith("gpt-oss")  # whatever's in config.json
 
 
 @patch("app.llm.ollama_client.ollama.Client")
@@ -217,7 +217,7 @@ def test_openai_complete_passes_json_response_format(mock_openai_cls):
 
 @patch("app.llm.openai_client.OpenAI")
 def test_openai_uses_custom_headers(mock_openai_cls):
-    """custom_headers from config.yaml must reach the SDK constructor."""
+    """custom_headers from config.json must reach the SDK constructor."""
     mock_inst = MagicMock()
     mock_inst.chat.completions.create.return_value = _fake_chat_response("x")
     mock_openai_cls.return_value = mock_inst
