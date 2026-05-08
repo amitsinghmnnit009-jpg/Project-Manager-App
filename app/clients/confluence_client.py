@@ -141,19 +141,28 @@ class ConfluenceClient:
     # ---------- whoami / health -----------------------------------------
 
     def whoami(self) -> dict:
-        """Verify the token works by listing spaces (minimal data).
+        """Verify the token works by fetching one piece of content (minimal data).
 
-        Note: deliberately NOT using /rest/api/user/current — many corporate
-        Confluence DC instances apply aggressive per-endpoint rate limits to
-        /user/* paths as a defense against user enumeration. The POC never
-        called user/current; we shouldn't either.
+        Endpoint history:
+          - /rest/api/user/current  → blocked by per-endpoint rate-limit
+                                      (corporate WAF/admin policy: anti-enumeration)
+          - /rest/api/space         → also blocked by the same policy on at least
+                                      one verified DC instance (limit=0, fillrate=0)
+          - /rest/api/content       → works. This is what WR-Project uses for all
+                                      its real reads; matching its endpoint family
+                                      avoids the per-endpoint rate-limit overrides.
 
-        Returns the first space (or empty list if account has no space access).
+        Returns the first visible content item (or empty if none accessible).
         """
-        data = self._get("/rest/api/space", {"limit": 1})
+        data = self._get("/rest/api/content", {"limit": 1})
+        first = (data.get("results") or [{}])[0]
         return {
-            "spaces_visible": data.get("size", 0),
-            "first_space": (data.get("results") or [{}])[0],
+            "content_visible": data.get("size", 0),
+            "first_page": {
+                "id": first.get("id", ""),
+                "title": first.get("title", ""),
+                "type": first.get("type", ""),
+            },
         }
 
     # ---------- page fetch ----------------------------------------------

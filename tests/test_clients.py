@@ -312,10 +312,20 @@ def test_parse_url_unknown_shape():
 
 @responses.activate
 def test_confluence_whoami():
+    """whoami() must hit /rest/api/content (not /user/current or /space) —
+    corporate Confluence DC instances apply per-endpoint rate-limit overrides
+    to those paths. /content is the only family verified to be reliably open."""
     responses.add(
         responses.GET,
-        "https://confluence.example.com/rest/api/user/current",
-        json={"displayName": "Alice", "userKey": "alice"},
+        "https://confluence.example.com/rest/api/content",
+        json={
+            "size": 1,
+            "results": [{
+                "id": "12345",
+                "type": "page",
+                "title": "Some Page",
+            }],
+        },
         status=200,
     )
     # disable per-call delay for fast tests
@@ -324,7 +334,9 @@ def test_confluence_whoami():
         request_delay_seconds=0,
     )
     me = client.whoami()
-    assert me["displayName"] == "Alice"
+    assert me["content_visible"] == 1
+    assert me["first_page"]["id"] == "12345"
+    assert me["first_page"]["title"] == "Some Page"
 
 
 # ---------- Confluence parser ----------

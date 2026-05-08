@@ -83,11 +83,12 @@ def whoami_jira():
 
 @cli.command("whoami-confluence")
 def whoami_confluence():
-    """Verify Confluence token works by listing one space.
+    """Verify Confluence token works by fetching one content item.
 
-    Goes through /rest/api/space (not /user/current) to avoid the
-    aggressive per-endpoint rate limits many corporate Confluence DC
-    instances apply to user-info endpoints.
+    Uses /rest/api/content (not /user/current or /space) because corporate
+    Confluence DC instances commonly apply aggressive per-endpoint rate-limit
+    overrides to /user/* and /space (anti-enumeration), while leaving /content
+    permissive. This mirrors the WR-Project POC's verified pattern.
     """
     from app.clients import get_confluence_client
     try:
@@ -95,13 +96,14 @@ def whoami_confluence():
     except Exception as e:
         click.echo(f"[FAIL] {e}", err=True)
         sys.exit(1)
-    spaces_visible = result.get("spaces_visible", 0)
-    first = result.get("first_space") or {}
-    if spaces_visible:
-        click.echo(f"[OK] Token works. {spaces_visible}+ space(s) visible. "
-                   f"First: {first.get('key', '?')} ({first.get('name', '?')})")
+    visible = result.get("content_visible", 0)
+    first = result.get("first_page") or {}
+    if visible:
+        click.echo(f"[OK] Token works. {visible}+ content item(s) visible. "
+                   f"First: {first.get('id', '?')} — {first.get('title', '?')!r} "
+                   f"({first.get('type', '?')})")
     else:
-        click.echo("[OK] Token works (no spaces visible to this account).")
+        click.echo("[OK] Token works (no content visible to this account).")
 
 
 @cli.command("jira-search")
