@@ -416,6 +416,62 @@ def test_parse_milestones_page_extracts_overview_and_table():
     assert m2.remark == "Tentative"
 
 
+CANONICAL_7COL_PAGE_HTML = """
+<h1>Project Overview</h1>
+<p>SSD firmware for the next-gen controller.</p>
+<h2>Milestones</h2>
+<table>
+  <tbody>
+    <tr>
+      <th>Milestone</th><th>Planned Date</th><th>Priority</th>
+      <th>Status</th><th>Dependency</th><th>Description</th><th>Remark</th>
+    </tr>
+    <tr>
+      <td>M1 — Vendor SDK</td><td>2026-05-15</td><td>P1</td>
+      <td>In-progress</td><td>vendor delivery</td>
+      <td>SDK headers integrated; example code compiles</td>
+      <td>Vendor delivery delayed 2 weeks</td>
+    </tr>
+    <tr>
+      <td>M2 — Wear-level</td><td>2026-06-30</td><td>P2</td>
+      <td>Pending</td><td>M1 (SDK headers)</td>
+      <td>Wear-levelling v3 passing perf tests</td>
+      <td></td>
+    </tr>
+  </tbody>
+</table>
+"""
+
+
+def test_parse_milestones_page_canonical_7col_format():
+    """Canonical 7-column format (Phase 1 recommended): Milestone | Planned Date
+    | Priority | Status | Dependency | Description | Remark. Quarter
+    intentionally absent (derivable from Planned Date).
+    """
+    page = {"title": "SSDFW Milestones",
+            "body": {"storage": {"value": CANONICAL_7COL_PAGE_HTML}}}
+    parsed = ConfluenceClient.parse_milestones_page(page)
+
+    assert "SSD firmware" in parsed.overview
+    assert len(parsed.milestones) == 2
+
+    m1 = parsed.milestones[0]
+    assert m1.name == "M1 — Vendor SDK"
+    assert m1.planned_date == "2026-05-15"
+    assert m1.priority == "P1"
+    assert m1.status == "In-progress"
+    assert m1.dependency == "vendor delivery"
+    assert "SDK headers integrated" in m1.description
+    assert "delayed 2 weeks" in m1.remark
+    assert m1.quarter == ""  # not in canonical 7-col
+
+    m2 = parsed.milestones[1]
+    assert m2.name == "M2 — Wear-level"
+    assert m2.priority == "P2"
+    assert m2.dependency == "M1 (SDK headers)"
+    assert m2.remark == ""   # explicitly empty cell
+
+
 SLIM_TABLE_HTML = """
 <h1>Project Overview</h1>
 <p>Whitepaper on memory tiering for our research group.</p>
@@ -433,9 +489,9 @@ SLIM_TABLE_HTML = """
 """
 
 
-def test_parse_milestones_page_slim_4col_format():
-    """Slim 4-column milestones table (recommended for Phase 1 onwards)
-    must parse without warnings."""
+def test_parse_milestones_page_slim_4col_fallback():
+    """Slim 4-column format (fallback for projects where 7-column alignment
+    is awkward in their Confluence theme). Optional columns parse to empty."""
     page = {"title": "Memory Tiering Research",
             "body": {"storage": {"value": SLIM_TABLE_HTML}}}
     parsed = ConfluenceClient.parse_milestones_page(page)
@@ -446,7 +502,7 @@ def test_parse_milestones_page_slim_4col_format():
     assert parsed.milestones[0].status == "Done"
     assert parsed.milestones[0].planned_date == "2026-04-30"
     assert "30+ papers reviewed" in parsed.milestones[0].description
-    # Slim format leaves these empty — that's fine
+    # Slim format leaves these empty — that's expected
     assert parsed.milestones[0].quarter == ""
     assert parsed.milestones[0].priority == ""
     assert parsed.milestones[0].dependency == ""

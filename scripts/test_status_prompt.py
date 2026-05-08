@@ -63,16 +63,31 @@ def find_project(cfg, code: str):
 # ---------- Block renderers (substituted into prompt placeholders) -------
 
 def render_milestones_block(milestones) -> str:
+    """Format milestone rows for the Status Engine prompt.
+
+    Omits empty fields so the LLM doesn't see noisy `field=` placeholders for
+    columns the TL didn't fill (e.g. when using the slim 4-column fallback,
+    Priority/Dependency/Remark won't appear in the rendered line).
+    """
     if not milestones:
         return "(none — Confluence page has no milestones table or it could not be parsed)"
+
     lines = []
     for m in milestones:
-        lines.append(
-            f"- {m.name} | quarter={m.quarter} | planned={m.planned_date} | "
-            f"priority={m.priority} | tl_declared_status={m.status} | "
-            f"dependency={m.dependency} | description={m.description}"
-            + (f" | remark={m.remark}" if m.remark else "")
-        )
+        # Required fields — always present
+        parts = [f"- {m.name}", f"planned={m.planned_date}",
+                 f"tl_declared_status={m.status}",
+                 f"description={m.description}"]
+        # Optional fields — include only when populated
+        if m.priority:
+            parts.insert(2, f"priority={m.priority}")
+        if m.dependency:
+            parts.insert(-1, f"dependency={m.dependency}")
+        if m.quarter:
+            parts.insert(2, f"quarter={m.quarter}")
+        if m.remark:
+            parts.append(f"remark={m.remark}")
+        lines.append(" | ".join(parts))
     return "\n".join(lines)
 
 
