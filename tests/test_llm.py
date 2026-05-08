@@ -12,29 +12,63 @@ import pytest
 
 # ---------- Factory ------------------------------------------------------
 
-def test_get_llm_client_ollama_by_default():
-    """Default config has provider=ollama → factory returns OllamaClient."""
-    from app.llm.base import get_llm_client
-    from app.llm.ollama_client import OllamaClient
+def _fake_cfg(provider: str):
+    """Build a fake top-level config with `provider` overridden but every
+    other field copied from the real config. This way OllamaClient /
+    OpenAICompatibleClient construction (which reads sub-config) still gets
+    valid field shapes, and we deterministically test the factory's routing
+    regardless of what the local config.yaml has set."""
+    import app.config as config_mod
+    real = config_mod.get_config()
+    return SimpleNamespace(llm=SimpleNamespace(
+        provider=provider,
+        ollama=real.llm.ollama,
+        openai=real.llm.openai,
+        temperature=real.llm.temperature,
+    ))
+
+
+def test_get_llm_client_returns_a_concrete_client():
+    """Whatever provider is configured locally, factory returns a real LLMClient."""
+    from app.llm.base import get_llm_client, LLMClient
     c = get_llm_client()
+    assert isinstance(c, LLMClient)
+    assert c.mode in ("ollama", "openai")
+
+
+def test_get_llm_client_routes_ollama(monkeypatch):
+    """provider=ollama → OllamaClient, regardless of local config.yaml."""
+    import app.config as config_mod
+    from app.llm import base as base_mod
+    from app.llm.ollama_client import OllamaClient
+
+    monkeypatch.setattr(config_mod, "get_config", lambda: _fake_cfg("ollama"))
+    c = base_mod.get_llm_client()
     assert isinstance(c, OllamaClient)
     assert c.mode == "ollama"
 
 
-def test_get_llm_client_unknown_provider_raises(monkeypatch):
-    """Unknown provider strings must raise (no silent fallback).
+def test_get_llm_client_routes_openai(monkeypatch):
+    """provider=openai → OpenAICompatibleClient, regardless of local config.yaml."""
+    import app.config as config_mod
+    from app.llm import base as base_mod
+    from app.llm.openai_client import OpenAICompatibleClient
 
-    `base.get_llm_client` does `from app.config import get_config` inside the
-    function body, so we have to patch `app.config.get_config` (not the alias
-    inside base.py) for the patched function to be picked up at call time.
-    """
+    monkeypatch.setattr(config_mod, "get_config", lambda: _fake_cfg("openai"))
+    c = base_mod.get_llm_client()
+    assert isinstance(c, OpenAICompatibleClient)
+    assert c.mode == "openai"
+
+
+def test_get_llm_client_unknown_provider_raises(monkeypatch):
+    """Unknown provider strings must raise (no silent fallback)."""
     import app.config as config_mod
     from app.llm import base as base_mod
 
-    class FakeCfg:
-        llm = SimpleNamespace(provider="not-a-real-provider")
-
-    monkeypatch.setattr(config_mod, "get_config", lambda: FakeCfg())
+    monkeypatch.setattr(
+        config_mod, "get_config",
+        lambda: SimpleNamespace(llm=SimpleNamespace(provider="not-a-real-provider")),
+    )
     with pytest.raises(ValueError):
         base_mod.get_llm_client()
 
