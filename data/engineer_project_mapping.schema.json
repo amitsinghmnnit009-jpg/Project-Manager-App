@@ -1,10 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "Engineer-Project Mapping",
-  "description": "Maps engineers (by knox_id) to the projects they work on. Read by app.registry.engineers at startup. Refresh requires app restart in Phase 1.",
+  "description": "Maps engineers (by knox_id) to the projects they work on. Read by app.registry.engineers at startup. Refresh requires app restart in Phase 1. Documentation keys starting with '_' (e.g. _README, _help_*) and the '$schema' self-reference are tolerated at the top level — the loader ignores them and a strict validator should too via the patternProperties / propertyNames rules below.",
   "type": "object",
   "required": ["engineers", "assignments"],
+  "patternProperties": {
+    "^_": { "description": "Documentation-only key; ignored by the loader." }
+  },
   "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Self-reference to this schema file. Annotation only; not validated."
+    },
     "engineers": {
       "type": "array",
       "description": "Master list of engineers. Each engineer appears exactly once here.",

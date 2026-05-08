@@ -1,6 +1,9 @@
 {
+  "_README": "Runtime configuration. Keys starting with '_' (like this one) are documentation only — Pydantic ignores them. Replace every PASTE_*, FILL_*, and example placeholder below with your real values before running. Reference: see config.example.json for additional notes per section.",
+
   "llm": {
-    "provider": "ollama",
+    "_help": "provider chooses which LLM client get_llm_client() returns. 'ollama' hits a local Ollama server; 'openai' hits any OpenAI-compatible endpoint (real OpenAI, internal company gateway, vLLM, etc.).",
+    "provider": "openai",
     "ollama": {
       "base_url": "http://localhost:11434",
       "model": "gpt-oss:latest",
@@ -8,78 +11,115 @@
       "timeout_seconds": 600
     },
     "openai": {
-      "base_url": "http://localhost:11434",
+      "base_url": "FILL_INTERNAL_GATEWAY_URL_HERE",
       "model": "gpt-oss:latest",
       "embed_model": "nomic-embed-text",
       "timeout_seconds": 600,
       "api_key": "",
       "custom_headers": {
-        "x-dep-ticket": "credential:",
+        "x-dep-ticket": "credential:FILL_TICKET_VALUE",
         "User-Type": "AD_ID",
-        "User-Id": "",
+        "User-Id": "FILL_YOUR_KNOX_ID",
         "Send-System-Name": "project-manager-app"
       }
     },
     "temperature": 0.2
   },
+
   "jira": {
-    "base_url": "",
-    "token": "",
+    "_help": "JIRA Data Center. token is a Personal Access Token from your JIRA profile (Settings -> Personal Access Tokens). Set verify_ssl=false for corporate self-signed certs, or point ca_bundle at your corporate CA .pem file.",
+    "base_url": "FILL_JIRA_BASE_URL_HERE",
+    "token": "PASTE_YOUR_JIRA_PAT_HERE",
     "api_version": "2",
-    "verify_ssl": true,
+    "verify_ssl": false,
     "ca_bundle": "",
     "enable_http_logging": false,
     "retry_total": 6
   },
+
   "confluence": {
-    "base_url": "",
-    "token": "",
-    "verify_ssl": true,
+    "_help": "Confluence Data Center. Same auth pattern as JIRA. retry_total kept low (1) because Confluence DC tends to apply per-token rate-limit overrides; high retries burn the token's bucket. extra_page_max_chars caps each optional context page in the Status prompt.",
+    "base_url": "FILL_CONFLUENCE_BASE_URL_HERE",
+    "token": "PASTE_YOUR_CONFLUENCE_PAT_HERE",
+    "verify_ssl": false,
     "ca_bundle": "",
     "enable_http_logging": false,
     "request_delay_seconds": 10,
     "retry_total": 1,
     "extra_page_max_chars": 3000
   },
+
   "database": {
     "url": "sqlite:///./app.db"
   },
+
   "logging": {
     "directory": "./logs",
     "level": "INFO",
     "rotate_max_bytes": 10485760,
     "rotate_backups": 10
   },
+
   "scheduler": {
     "status_recompute_cadence": "daily",
     "weekly_aggregation_offset_minutes": 5,
     "timezone": "Asia/Kolkata"
   },
+
   "email": {
+    "_help": "SMTP is mocked in Phase 1 (mock=true). 'Sent' emails are appended to logs/sent_emails.jsonl instead of leaving the machine. Flip mock=false and fill smtp_host once a relay is available.",
     "mock": true,
     "mock_log_path": "./logs/sent_emails.jsonl",
     "smtp_host": "",
     "smtp_port": 25,
     "from_address": "project-manager-app@noreply.local"
   },
+
   "reminders": {
     "hours_before_cutoff": 24,
     "hours_after_cutoff": 4
   },
+
   "reports": {
     "retention_weeks": 4,
     "default_template_path": "./data/report_template_default.md"
   },
+
   "engineers": {
     "mapping_file": "./data/engineer_project_mapping.json"
   },
+
   "holidays": {
     "calendar_file": "./data/holidays_ist_2026.json",
     "default_calendar_id": "default"
   },
+
   "api": {
     "host": "127.0.0.1",
     "port": 8000
   },
-  "projects": []
+
+  "projects": [
+    {
+      "_help": "REPLACE THIS EXAMPLE with your real project. Required: code, name, jira_project_key, confluence_milestones_url, confluence_fr_url. Everything else has a default. confluence_extra_pages is OPTIONAL; the AI uses listed pages as supplementary context only and may NOT derive milestones or FRs from them. Add additional projects by appending more {...} objects to this array.",
+      "code": "EXAMPLE_REPLACE_ME",
+      "name": "Example Project — replace with your real project name",
+      "type": "general",
+      "description": "One-line description of the project (purpose, intended outcome).",
+      "owning_tl": "Some TL",
+      "owning_pgm": "You",
+      "start_date": "2026-01-15",
+      "planned_end_date": "2026-12-31",
+      "jira_project_key": "EXAMPLEKEY",
+      "confluence_milestones_url": "FILL_MILESTONES_PAGE_URL_HERE",
+      "confluence_fr_url": "FILL_FR_PAGE_URL_HERE",
+      "confluence_extra_pages": [],
+      "weekly_cutoff": "Mon 13:00",
+      "week_boundary": "monday",
+      "recompute_cadence": "daily",
+      "issue_types": ["Task", "Sub-task", "Story", "Bug"],
+      "chronic_threshold": 3,
+      "holiday_calendar_id": "default"
+    }
+  ]
 }

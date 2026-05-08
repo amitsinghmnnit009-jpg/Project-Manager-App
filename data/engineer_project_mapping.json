@@ -1,31 +1,18 @@
 {
+  "_README": "Engineer-to-project mapping. The Aggregation Engine reads this to know who to expect JIRA activity from on each project. Reload requires an app restart (Phase 1). Keys starting with '_' are documentation only — the loader ignores them.",
   "$schema": "./engineer_project_mapping.schema.json",
+
+  "_help_engineers": "Master list of every engineer who appears on any project. 'name' must match what JIRA returns in the user's displayName field. 'knox_id' must match JIRA's 'name' field on the user object (the actual username — NOT the 'key' field which is JIRAUSERxxxxx auto-generated). Replace these examples with your real engineers.",
   "engineers": [
-    {
-      "name": "Alice Engineer",
-      "knox_id": "alice.engineer"
-    },
-    {
-      "name": "Bob Coder",
-      "knox_id": "bob.coder"
-    },
-    {
-      "name": "Charlie QA",
-      "knox_id": "charlie.qa"
-    }
+    {"name": "Alice Engineer", "knox_id": "alice.engineer"},
+    {"name": "Bob Coder",      "knox_id": "bob.coder"},
+    {"name": "Charlie QA",     "knox_id": "charlie.qa"}
   ],
+
+  "_help_assignments": "Which engineers are on which projects. Each assignment lists project codes that MUST match config.json's projects[].code values exactly (case-insensitive). One engineer can be on multiple projects. Replace these examples to match your real org.",
   "assignments": [
-    {
-      "knox_id": "alice.engineer",
-      "projects": ["SSDFW", "SIMFW"]
-    },
-    {
-      "knox_id": "bob.coder",
-      "projects": ["SSDFW"]
-    },
-    {
-      "knox_id": "charlie.qa",
-      "projects": ["SSDQA"]
-    }
+    {"knox_id": "alice.engineer", "projects": ["EXAMPLE_REPLACE_ME"]},
+    {"knox_id": "bob.coder",      "projects": ["EXAMPLE_REPLACE_ME"]},
+    {"knox_id": "charlie.qa",     "projects": ["ANOTHER_PROJECT_CODE"]}
   ]
 }

@@ -1,5 +1,7 @@
 {
-  "_README": "Holiday calendar (IST). The system uses the calendar named in config.json's holidays.default_calendar_id. A project can override via its holiday_calendar_id field. Per FR §B.7.3, a holiday WEEK (a week containing any of these dates) auto-skips weekly aggregation.",
+  "_README": "Holiday calendar (IST). The system uses the calendar named in config.json's holidays.default_calendar_id. A project can override via its holiday_calendar_id field. Per FR §B.7.3, a holiday WEEK (a week containing any of these dates) auto-skips weekly aggregation. Keys starting with '_' are documentation only — the loader ignores them.",
+
+  "_help_calendars": "Add or remove calendar entries under 'calendars'. The key (e.g. 'default', 'bengaluru', 'seoul') is referenced by config.json holidays.default_calendar_id or per-project holiday_calendar_id. Each calendar has a description and a holidays list of {date: YYYY-MM-DD, name: ...} objects. Replace the holidays below with your actual company calendar; add additional calendars per region/team if needed.",
   "calendars": {
     "default": {
       "description": "India national holidays + corporate holidays for 2026 (FILL ME IN)",
@@ -8,6 +10,15 @@
         {"date": "2026-08-15", "name": "Independence Day"},
         {"date": "2026-10-02", "name": "Gandhi Jayanti"},
         {"date": "2026-12-25", "name": "Christmas Day"}
+      ]
+    },
+
+    "_example_regional_calendar": {
+      "_help": "Example of an optional regional calendar. To enable, rename the key (drop the leading underscore) and reference it from a project's holiday_calendar_id in config.json.",
+      "description": "Example: Bengaluru office holidays 2026 (template only)",
+      "holidays": [
+        {"date": "2026-04-14", "name": "Tamil New Year (example)"},
+        {"date": "2026-11-01", "name": "Karnataka Rajyotsava (example)"}
       ]
     }
   }
