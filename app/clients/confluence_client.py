@@ -53,6 +53,13 @@ class ProjectPageContent:
 def _parse_page_url(url: str) -> dict:
     """Extract identifiers from a Confluence page URL.
 
+    Returns a dict with any combination of: space_key, page_id, title.
+    The fetcher prefers (space_key + title) over page_id alone — corporate
+    Confluence DC instances often rate-limit /rest/api/content/{id}/...
+    aggressively while leaving /rest/api/content?title=...&spaceKey=...
+    permissive (POC's verified pattern). Extracting the title from URLs
+    that contain it lets us stay on the safe path.
+
     Supported shapes:
       .../pages/viewpage.action?pageId=12345
       .../display/SPACE/Page+Title
@@ -62,14 +69,19 @@ def _parse_page_url(url: str) -> dict:
     path = parsed.path
     qs = parse_qs(parsed.query)
 
-    # ?pageId=...
+    # ?pageId=...   (no title in URL — must use page_id form)
     if "pageId" in qs:
         return {"page_id": qs["pageId"][0]}
 
-    # /spaces/SPACE/pages/12345/...
-    m = re.search(r"/spaces/([^/]+)/pages/(\d+)", path)
+    # /spaces/SPACE/pages/12345/Page+Title
+    # All three identifiers present; trailing title segment is optional.
+    m = re.search(r"/spaces/([^/]+)/pages/(\d+)(?:/([^/?#]+))?", path)
     if m:
-        return {"space_key": m.group(1), "page_id": m.group(2)}
+        out = {"space_key": m.group(1), "page_id": m.group(2)}
+        title_seg = m.group(3)
+        if title_seg:
+            out["title"] = unquote(title_seg).replace("+", " ")
+        return out
 
     # /display/SPACE/Page+Title
     m = re.search(r"/display/([^/]+)/(.+?)(?:[?#]|$)", path)
@@ -184,7 +196,19 @@ class ConfluenceClient:
         return results[0]
 
     def get_page_by_url(self, url: str, expand: str = "body.storage,version") -> dict:
-        """Fetch a page given its display URL. Routes to id-based or title-based lookup."""
+        """Fetch a page given its display URL.
+
+        Routing rule: prefer the (space_key + title) query form over the
+        path-form /rest/api/content/{id}. Many corporate Confluence DC
+        instances apply per-endpoint rate-limit overrides to /content/{id}/...
+        while leaving /rest/api/content?title=...&spaceKey=... permissive
+        (this matches the WR-Project POC's working pattern). When the URL
+        gives us all three identifiers, we ignore page_id and use title.
+
+        Fallback: if only a pageId is available (e.g. viewpage.action?pageId=N),
+        we use /rest/api/content/{id}. If that path is locked at your site,
+        the only fix is to use a URL that includes the title.
+        """
         sys = system_log()
         ids = _parse_page_url(url)
         if not ids:
@@ -192,10 +216,12 @@ class ConfluenceClient:
 
         sys.info("confluence get_page_by_url", extra={"url": url, "parsed": ids})
 
-        if "page_id" in ids:
-            return self.get_page_by_id(ids["page_id"], expand=expand)
+        # Preferred: title-based query form (POC pattern, avoids /content/{id})
         if "space_key" in ids and "title" in ids:
             return self.get_page_by_title(ids["space_key"], ids["title"], expand=expand)
+        # Fallback: id-based path form (only when title isn't in the URL)
+        if "page_id" in ids:
+            return self.get_page_by_id(ids["page_id"], expand=expand)
         raise ValueError(f"URL parsed but missing identifiers: {ids}")
 
     # ---------- parsing -------------------------------------------------

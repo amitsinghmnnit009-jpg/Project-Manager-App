@@ -294,8 +294,30 @@ def test_parse_url_pageid():
 
 
 def test_parse_url_spaces_pageid():
+    """Modern /spaces/SPACE/pages/ID/Title URL: extract ALL three identifiers
+    so the fetcher can prefer the title-based query form (POC pattern,
+    avoids /rest/api/content/{id} which is rate-limited at some sites)."""
     out = _parse_page_url("https://confluence.example.com/spaces/SPACE/pages/12345/My+Page")
+    assert out == {"space_key": "SPACE", "page_id": "12345", "title": "My Page"}
+
+
+def test_parse_url_spaces_pageid_no_trailing_title():
+    """Same shape but without the trailing title segment — falls back to
+    page_id-only result. Caller must use id-based fetch."""
+    out = _parse_page_url("https://confluence.example.com/spaces/SPACE/pages/12345")
     assert out == {"space_key": "SPACE", "page_id": "12345"}
+
+
+def test_parse_url_real_user_shape():
+    """Actual URL shape reported by user (Project+Status+2026 with pluses)."""
+    out = _parse_page_url(
+        "https://confluence.hippo.net/spaces/0987878/pages/7878667/Project+Status+2026"
+    )
+    assert out == {
+        "space_key": "0987878",
+        "page_id": "7878667",
+        "title": "Project Status 2026",
+    }
 
 
 def test_parse_url_display_title():
