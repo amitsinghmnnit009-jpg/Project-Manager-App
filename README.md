@@ -145,10 +145,10 @@ pytest tests/test_smoke.py    # smoke check
 
 | Step | Module(s) | Status |
 |------|-----------|--------|
-| 1 | Repo scaffold | ⬜ (this commit) |
-| 2 | HTTP session + JIRA + Confluence clients | ⬜ |
-| 3 | LLM client (Ollama + OpenAI-compatible) | ⬜ |
-| 4 | Standalone Prompt 3 test script | ⬜ |
+| 1 | Repo scaffold | ✅ |
+| 2 | HTTP session + JIRA + Confluence clients | ✅ validated end-to-end against real JIRA DC + Confluence DC |
+| 3 | LLM client (Ollama + OpenAI-compatible) | ✅ validated against internal openai gateway (chat); embeddings endpoint not exposed by gateway, not used by Phase 1 |
+| 4 | Standalone Prompt 3 test script | ✅ implemented; awaiting first run against a real Confluence-filled project |
 | 5 | Project Registry + engineer mapping loader | ⬜ |
 | 6 | Aggregation Engine (Prompt 1) | ⬜ |
 | 7 | Highlights Engine (Prompt 2) | ⬜ |

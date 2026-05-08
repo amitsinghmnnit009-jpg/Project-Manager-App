@@ -132,8 +132,17 @@ def validate_prompt3_json(parsed) -> tuple[bool, list[str]]:
         issues.append(f"schedule_status={s!r} not in {sorted(SCHEDULE_VALID)}")
 
     pct = parsed.get("completion_pct")
-    if pct is not None and not (isinstance(pct, int) and 0 <= pct <= 100):
-        issues.append(f"completion_pct={pct!r} should be int 0..100 or null")
+    if pct is not None:
+        # bool is a subclass of int in Python — exclude it explicitly
+        # before the numeric check, otherwise `True`/`False` would pass.
+        if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+            issues.append(f"completion_pct={pct!r} should be int 0..100 or null")
+        elif not (0 <= pct <= 100):
+            issues.append(f"completion_pct={pct!r} out of range 0..100")
+        elif isinstance(pct, float) and not pct.is_integer():
+            # LLM occasionally emits 40.0; accept that as 40, but flag a
+            # genuine fractional value (e.g. 42.7) since the schema says int.
+            issues.append(f"completion_pct={pct!r} should be an integer")
     if h == "InsufficientEvidence" and pct is not None:
         issues.append(
             f"completion_pct={pct} should be null when overall_health=InsufficientEvidence"

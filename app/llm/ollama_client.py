@@ -46,7 +46,17 @@ class OllamaClient(LLMClient):
         cfg = get_config().llm
         self._cfg = cfg.ollama
         self._temperature = cfg.temperature
-        self._client = ollama.Client(host=self._cfg.base_url)
+        # ollama>=0.4 accepts `timeout` in Client.__init__; older versions
+        # (which the pyproject still allows via >=0.1.7) do not. Pass
+        # defensively so a cold gpt-oss:latest load doesn't trip the default
+        # httpx timeout, but stay compatible with both API surfaces.
+        try:
+            self._client = ollama.Client(
+                host=self._cfg.base_url,
+                timeout=float(self._cfg.timeout_seconds),
+            )
+        except TypeError:
+            self._client = ollama.Client(host=self._cfg.base_url)
 
     @property
     def mode(self) -> str:
