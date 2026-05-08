@@ -12,19 +12,17 @@ import pytest
 
 # ---------- Factory ------------------------------------------------------
 
-def _fake_cfg(provider: str):
+def _build_fake_cfg(real_cfg, provider: str):
     """Build a fake top-level config with `provider` overridden but every
-    other field copied from the real config. This way OllamaClient /
-    OpenAICompatibleClient construction (which reads sub-config) still gets
-    valid field shapes, and we deterministically test the factory's routing
-    regardless of what the local config.yaml has set."""
-    import app.config as config_mod
-    real = config_mod.get_config()
+    other field copied from the real config. CALLER must pass `real_cfg`
+    captured BEFORE monkeypatch replaces get_config — otherwise
+    config_mod.get_config() inside this helper would recurse into the lambda
+    that called us."""
     return SimpleNamespace(llm=SimpleNamespace(
         provider=provider,
-        ollama=real.llm.ollama,
-        openai=real.llm.openai,
-        temperature=real.llm.temperature,
+        ollama=real_cfg.llm.ollama,
+        openai=real_cfg.llm.openai,
+        temperature=real_cfg.llm.temperature,
     ))
 
 
@@ -42,7 +40,10 @@ def test_get_llm_client_routes_ollama(monkeypatch):
     from app.llm import base as base_mod
     from app.llm.ollama_client import OllamaClient
 
-    monkeypatch.setattr(config_mod, "get_config", lambda: _fake_cfg("ollama"))
+    real_cfg = config_mod.get_config()       # capture BEFORE monkeypatch
+    fake_cfg = _build_fake_cfg(real_cfg, "ollama")
+    monkeypatch.setattr(config_mod, "get_config", lambda: fake_cfg)
+
     c = base_mod.get_llm_client()
     assert isinstance(c, OllamaClient)
     assert c.mode == "ollama"
@@ -54,7 +55,10 @@ def test_get_llm_client_routes_openai(monkeypatch):
     from app.llm import base as base_mod
     from app.llm.openai_client import OpenAICompatibleClient
 
-    monkeypatch.setattr(config_mod, "get_config", lambda: _fake_cfg("openai"))
+    real_cfg = config_mod.get_config()       # capture BEFORE monkeypatch
+    fake_cfg = _build_fake_cfg(real_cfg, "openai")
+    monkeypatch.setattr(config_mod, "get_config", lambda: fake_cfg)
+
     c = base_mod.get_llm_client()
     assert isinstance(c, OpenAICompatibleClient)
     assert c.mode == "openai"
@@ -65,10 +69,9 @@ def test_get_llm_client_unknown_provider_raises(monkeypatch):
     import app.config as config_mod
     from app.llm import base as base_mod
 
-    monkeypatch.setattr(
-        config_mod, "get_config",
-        lambda: SimpleNamespace(llm=SimpleNamespace(provider="not-a-real-provider")),
-    )
+    fake_cfg = SimpleNamespace(llm=SimpleNamespace(provider="not-a-real-provider"))
+    monkeypatch.setattr(config_mod, "get_config", lambda: fake_cfg)
+
     with pytest.raises(ValueError):
         base_mod.get_llm_client()
 
