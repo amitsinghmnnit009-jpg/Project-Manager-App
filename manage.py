@@ -11,6 +11,7 @@ Usage:
     python manage.py jira-activity <project_key>         # Engineer-grouped weekly activity
     python manage.py show-mapping [project_key]          # Diagnostic: see parsed engineer mapping
     python manage.py fetch-confluence-page <url>         # Fetch+parse a Confluence project page
+    python manage.py confluence-probe                    # Single-shot raw 429-diagnostic probe
 """
 from __future__ import annotations
 import sys
@@ -393,6 +394,97 @@ def show_mapping(project_key, engineers_file):
             for e in engineers_list:
                 if e.get("knox_id", "").strip().lower() in matched_norm:
                     click.echo(f"  - {e.get('name')} ({e.get('knox_id')})")
+
+
+@cli.command("confluence-probe")
+@click.option("--path", default="/rest/api/space", help="Endpoint to probe (default: /rest/api/space)")
+@click.option("--params", default="limit=1",
+              help="Query string (default: 'limit=1'). Pass '' for none.")
+def confluence_probe(path, params):
+    """Single-shot Confluence diagnostic that bypasses retry/log infrastructure.
+
+    Use when whoami-confluence keeps failing — this makes ONE bare GET, prints
+    the full status code + ALL response headers + body excerpt, then interprets
+    the result. Eliminates retry as a variable so we can see exactly what the
+    server is saying right now.
+
+    No retries. No fail-fast logic. No 10-second pre-delay.
+    """
+    import requests
+    from app.config import get_config
+
+    cfg = get_config().confluence
+    if not cfg.base_url or not cfg.token:
+        click.echo("[FAIL] confluence.base_url and confluence.token must be set in config.yaml", err=True)
+        sys.exit(1)
+
+    base = cfg.base_url.rstrip("/")
+    qs = ("?" + params) if params else ""
+    url = f"{base}{path}{qs}"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {cfg.token}",
+    }
+    verify = cfg.ca_bundle if cfg.ca_bundle else cfg.verify_ssl
+    if not verify:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    click.echo(f"GET {url}")
+    click.echo(f"verify_ssl={verify!r}  ca_bundle={cfg.ca_bundle!r}")
+    click.echo("")
+
+    try:
+        r = requests.get(url, headers=headers, verify=verify, timeout=30)
+    except Exception as e:
+        click.echo(f"[NETWORK] {type(e).__name__}: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Status: {r.status_code}")
+    click.echo("Response headers:")
+    for k, v in r.headers.items():
+        click.echo(f"  {k}: {v}")
+    click.echo("")
+    body = r.text or ""
+    click.echo(f"Body ({len(body)} chars):")
+    click.echo(body[:1000] + ("…" if len(body) > 1000 else ""))
+    click.echo("")
+
+    # ---- Interpretation ----
+    sc = r.status_code
+    if sc == 200:
+        click.echo("[OK] 200 — token + endpoint work. If whoami-confluence still fails, "
+                   "the issue is in our retry path; please share the failure log line.")
+    elif sc == 401:
+        click.echo("[AUTH] 401 — token is invalid (revoked, expired, wrong format). "
+                   "Re-issue a Personal Access Token from your Confluence profile.")
+    elif sc == 403:
+        click.echo("[AUTH] 403 — token authenticated but lacks permission for this endpoint. "
+                   "Try --path /rest/api/content with --params 'limit=1'.")
+    elif sc == 404:
+        click.echo("[URL] 404 — base_url is reachable but the path is wrong, or there is "
+                   "a reverse-proxy stripping API paths. Check confluence.base_url.")
+    elif sc == 429:
+        fr = r.headers.get("x-ratelimit-fillrate", "?")
+        iv = r.headers.get("x-ratelimit-interval-seconds", "?")
+        ra = r.headers.get("Retry-After", "?")
+        click.echo(f"[RATE-LIMIT] 429 (fillrate={fr}, interval={iv}s, Retry-After={ra})")
+        if fr == "0":
+            click.echo("")
+            click.echo("  ⚠ fillrate=0 means the bucket is empty AND not refilling automatically.")
+            click.echo("    This is server-side: typically a per-token quota or an admin-applied")
+            click.echo("    rate-limit override. Code-side retries cannot fix this.")
+            click.echo("")
+            click.echo("  Action: contact your Confluence admin and ask them to:")
+            click.echo("    1. Check whether a rate-limit override is applied to your user/token")
+            click.echo("    2. Reset the bucket / remove the override if so")
+            click.echo("    Reference: <Confluence base URL>/admin/rate-limiting")
+        else:
+            click.echo(f"  Bucket IS refilling. Wait ~{iv}s and retry; do not run repeated commands.")
+    elif sc in (502, 503, 504):
+        click.echo(f"[GATEWAY] {sc} — upstream/proxy issue. Try again in a few minutes.")
+    else:
+        click.echo(f"[UNEXPECTED] {sc} — read the headers and body above to interpret.")
 
 
 @cli.command("fetch-confluence-page")
