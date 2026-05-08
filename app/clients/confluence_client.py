@@ -26,7 +26,12 @@ from app.utils.logging import system_log, sync_log
 
 @dataclass
 class MilestoneRow:
-    """One row from the Milestones table on the project's Confluence page."""
+    """One row from a Milestones table.
+
+    Fields beyond name/planned_date/status/description are optional — the
+    slim 4-column template only fills the four required fields, and the
+    legacy 8-column template fills all eight. Either parses fine.
+    """
     name: str = ""
     quarter: str = ""
     planned_date: str = ""
@@ -38,14 +43,49 @@ class MilestoneRow:
 
 
 @dataclass
-class ProjectPageContent:
-    """Parsed content of a project's Confluence page — input for Prompt 3."""
+class MilestonesPageContent:
+    """Parsed content of a project's *Milestones* page (Template A).
+
+    The whole page is the milestones source. Parser locates the first table
+    on the page (or in any section) and extracts rows. If a 'Project Overview'
+    heading is present, its text is captured separately for prompt context.
+    """
     title: str = ""
     overview: str = ""
     milestones: list[MilestoneRow] = field(default_factory=list)
+    raw_html: str = ""
+    parse_warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FRsPageContent:
+    """Parsed content of a project's *Functional Requirements* page (Template B).
+
+    Free-form. Whole body becomes `functional_requirements` text. If a
+    'Project Overview' heading is present, its text is captured separately.
+    """
+    title: str = ""
+    overview: str = ""
     functional_requirements: str = ""
     raw_html: str = ""
     parse_warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ExtraPageContent:
+    """Parsed content of an *extra context* page (Template C).
+
+    Page body is treated as supplementary background — extracted as plain
+    text, truncated to `max_chars`. The AI is instructed not to derive
+    milestones or FRs from these pages; they only inform rationale.
+    """
+    title: str = ""
+    body_text: str = ""
+    truncated: bool = False
+    raw_html: str = ""
+    parse_warnings: list[str] = field(default_factory=list)
+
+
 
 
 # ---------- URL parsing ---------------------------------------------------
@@ -227,21 +267,19 @@ class ConfluenceClient:
     # ---------- parsing -------------------------------------------------
 
     @staticmethod
-    def parse_project_page(page: dict) -> ProjectPageContent:
-        """Extract Project Overview + Milestones table + Functional Requirements
-        from a page returned by get_page_by_url / get_page_by_id.
+    def parse_milestones_page(page: dict) -> MilestonesPageContent:
+        """Parse a page that IS the Milestones page (Template A).
 
-        Tolerant to structural variation: locates sections by heading text
-        (case-insensitive substring match). Returns warnings for missing
-        sections rather than raising.
+        Strategy:
+          1. If a 'Project Overview' heading is present, capture its text.
+          2. Locate the milestones table — first try the section under any
+             'Milestones' heading; fall back to the first <table> on the page.
+          3. Parse rows via _parse_milestones_table (slim 4-col AND legacy
+             8-col formats both supported by header-name matching).
         """
         title = page.get("title", "")
-        body_html = (
-            page.get("body", {}).get("storage", {}).get("value", "")
-            or ""
-        )
-
-        result = ProjectPageContent(title=title, raw_html=body_html)
+        body_html = page.get("body", {}).get("storage", {}).get("value", "") or ""
+        result = MilestonesPageContent(title=title, raw_html=body_html)
 
         if not body_html:
             result.parse_warnings.append("Page body is empty.")
@@ -249,67 +287,100 @@ class ConfluenceClient:
 
         soup = BeautifulSoup(body_html, "html.parser")
 
-        # Walk top-level elements; group content by heading
-        headings = soup.find_all(re.compile(r"^h[1-6]$"))
-        if not headings:
-            result.parse_warnings.append("Page contains no headings; cannot locate sections.")
+        # Optional: capture overview if present
+        overview_block = _find_section_content(soup, "overview")
+        if overview_block:
+            result.overview = _to_text(overview_block)
+
+        # Try the milestones section first; fall back to first table on page.
+        table = None
+        ms_block = _find_section_content(soup, "milestone")
+        if ms_block:
+            table = _find_table_in_block(ms_block)
+
+        if table is None:
+            # No 'Milestones' heading — assume the whole page is milestones.
+            # Take the first table.
+            table = soup.find("table")
+            if table is None:
+                result.parse_warnings.append(
+                    "Milestones page has no table (looked under 'Milestones' "
+                    "heading and as the first table on the page)."
+                )
+                return result
+
+        result.milestones = _parse_milestones_table(table, result.parse_warnings)
+        return result
+
+    @staticmethod
+    def parse_fr_page(page: dict) -> FRsPageContent:
+        """Parse a page that IS the Functional Requirements page (Template B).
+
+        Free-form. Strategy:
+          1. If a 'Project Overview' heading is present, capture its text.
+          2. If a 'Functional Requirements' (or 'Requirements') heading is
+             present, take its section as the FR text.
+          3. Otherwise, treat the whole body as FR text.
+        """
+        title = page.get("title", "")
+        body_html = page.get("body", {}).get("storage", {}).get("value", "") or ""
+        result = FRsPageContent(title=title, raw_html=body_html)
+
+        if not body_html:
+            result.parse_warnings.append("Page body is empty.")
             return result
 
-        sections: dict[str, list] = {}
-        for h in headings:
-            label = h.get_text(strip=True).lower()
-            content = []
-            for sib in h.find_next_siblings():
-                if sib.name and re.match(r"^h[1-6]$", sib.name):
-                    break
-                content.append(sib)
-            sections[label] = content
+        soup = BeautifulSoup(body_html, "html.parser")
 
-        # --- Overview ----
-        for label, content in sections.items():
-            if "overview" in label:
-                result.overview = _to_text(content)
-                break
+        overview_block = _find_section_content(soup, "overview")
+        if overview_block:
+            result.overview = _to_text(overview_block)
 
-        # --- Milestones table ----
-        milestones_block = None
-        for label, content in sections.items():
-            if "milestone" in label:
-                milestones_block = content
-                break
-        if milestones_block is None:
-            result.parse_warnings.append("No 'Milestones' section heading found.")
-        else:
-            table = next((c for c in milestones_block if getattr(c, "name", None) == "table"), None)
-            if table is None:
-                # Sometimes the table is wrapped in a div
-                for c in milestones_block:
-                    if hasattr(c, "find"):
-                        t = c.find("table")
-                        if t:
-                            table = t
-                            break
-            if table is None:
-                result.parse_warnings.append("'Milestones' section has no table.")
-            else:
-                result.milestones = _parse_milestones_table(table, result.parse_warnings)
-
-        # --- Functional Requirements ----
-        fr_block = None
-        for label, content in sections.items():
-            if "functional" in label and ("requirement" in label or "req" in label):
-                fr_block = content
-                break
-        if fr_block is None:
-            for label, content in sections.items():
-                # Looser match for variations like "FRs", "Requirements"
-                if "requirement" in label:
-                    fr_block = content
-                    break
-        if fr_block is None:
-            result.parse_warnings.append("No 'Functional Requirements' section heading found.")
-        else:
+        # Prefer the Functional Requirements section; fall back to whole body.
+        fr_block = _find_section_content(soup, "requirement")
+        if fr_block:
             result.functional_requirements = _to_text(fr_block)
+        else:
+            # Whole body is FR text. Strip the overview heading + content if
+            # we already captured it separately, to avoid duplication.
+            if result.overview:
+                result.functional_requirements = _body_text_excluding_section(
+                    soup, "overview"
+                )
+            else:
+                result.functional_requirements = soup.get_text(
+                    separator="\n", strip=True
+                )
+            if not result.functional_requirements.strip():
+                result.parse_warnings.append("FR page body is empty after parsing.")
+
+        return result
+
+    @staticmethod
+    def parse_extra_page(page: dict, max_chars: int = 3000) -> ExtraPageContent:
+        """Parse a supplementary context page (Template C).
+
+        Whole body becomes plain text, truncated to `max_chars`. Sets
+        `truncated=True` when truncation actually occurred. Used for the
+        optional extra context pages — the AI is instructed to use these
+        as background only and not derive milestones or FRs from them.
+        """
+        title = page.get("title", "")
+        body_html = page.get("body", {}).get("storage", {}).get("value", "") or ""
+        result = ExtraPageContent(title=title, raw_html=body_html)
+
+        if not body_html:
+            result.parse_warnings.append("Page body is empty.")
+            return result
+
+        soup = BeautifulSoup(body_html, "html.parser")
+        text = soup.get_text(separator="\n", strip=True)
+
+        if len(text) > max_chars:
+            result.body_text = text[:max_chars] + "\n\n[... truncated ...]"
+            result.truncated = True
+        else:
+            result.body_text = text
 
         return result
 
@@ -320,6 +391,70 @@ def _to_text(elements) -> str:
     """Join a list of BeautifulSoup elements into plain text, preserving paragraphs."""
     parts: list[str] = []
     for el in elements:
+        if hasattr(el, "get_text"):
+            t = el.get_text(separator=" ", strip=True)
+            if t:
+                parts.append(t)
+        else:
+            s = str(el).strip()
+            if s:
+                parts.append(s)
+    return "\n\n".join(parts)
+
+
+def _find_section_content(soup, heading_substring: str):
+    """Find a heading whose text contains `heading_substring` (case-insensitive)
+    and return all sibling elements until the next heading. Returns None if
+    no matching heading exists. Used by the page parsers to optionally locate
+    a 'Project Overview' / 'Milestones' / 'Functional Requirements' section.
+    """
+    needle = heading_substring.lower()
+    for h in soup.find_all(re.compile(r"^h[1-6]$")):
+        if needle in h.get_text(strip=True).lower():
+            content = []
+            for sib in h.find_next_siblings():
+                if sib.name and re.match(r"^h[1-6]$", sib.name):
+                    break
+                content.append(sib)
+            return content
+    return None
+
+
+def _find_table_in_block(block) -> "object | None":
+    """Locate a <table> inside a block of BeautifulSoup elements (which may
+    include the table directly, or wrap it in a div / macro). Returns the
+    Tag, or None."""
+    if not block:
+        return None
+    direct = next((c for c in block if getattr(c, "name", None) == "table"), None)
+    if direct is not None:
+        return direct
+    for c in block:
+        if hasattr(c, "find"):
+            t = c.find("table")
+            if t is not None:
+                return t
+    return None
+
+
+def _body_text_excluding_section(soup, heading_substring: str) -> str:
+    """Return the page body as plain text, excluding the section under the
+    heading matching `heading_substring`. Used by parse_fr_page when the
+    overview was captured separately and we don't want to duplicate it in
+    the FR text."""
+    needle = heading_substring.lower()
+    skip_until_next_heading = False
+    parts: list[str] = []
+    for el in soup.children:
+        # Skip the matched heading and its content until the next heading
+        if hasattr(el, "name") and el.name and re.match(r"^h[1-6]$", el.name):
+            if needle in el.get_text(strip=True).lower():
+                skip_until_next_heading = True
+                continue
+            else:
+                skip_until_next_heading = False
+        if skip_until_next_heading:
+            continue
         if hasattr(el, "get_text"):
             t = el.get_text(separator=" ", strip=True)
             if t:

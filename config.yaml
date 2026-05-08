@@ -58,6 +58,10 @@ confluence:
   # 0 = single attempt only (strictest, recommended while debugging 429s).
   # 1 = single retry (safe default for normal use).
   retry_total: 1
+  # Per-extra-context-page body is truncated to this many characters when
+  # injected into the Status Engine prompt, to keep the AI's context window
+  # within budget regardless of how long an extra page is.
+  extra_page_max_chars: 3000
 
 # --- Database (Phase 1: SQLite, swap to PostgreSQL later via SQLAlchemy URL) -
 database:
@@ -110,8 +114,8 @@ api:
 
 # --- Per-project configuration ----------------------------------------------
 # Add one entry per project. The Admin/PGM onboards new projects here.
-# All fields except `code`, `name`, `confluence_page_url`, `jira_project_key`
-# are optional and inherit from global defaults if omitted.
+# Required: code, name, jira_project_key, confluence_milestones_url, confluence_fr_url.
+# Everything else inherits from global defaults if omitted.
 projects: []
 # Example entry (copy and edit):
 # - code: "SSDFW"
@@ -122,8 +126,15 @@ projects: []
 #   owning_pgm: "Bob PGM"
 #   start_date: "2026-01-15"
 #   planned_end_date: "2026-12-31"
-#   confluence_page_url: "https://confluence.yourcompany.local/display/SPACE/SSD+Firmware+v3"
 #   jira_project_key: "SSDFW"
+#   # Two structured pages — both required:
+#   confluence_milestones_url: "https://confluence.yourcompany.local/spaces/SPACE/pages/12345/SSDFW+Milestones"
+#   confluence_fr_url:         "https://confluence.yourcompany.local/spaces/SPACE/pages/12346/SSDFW+Functional+Requirements"
+#   # Zero or more optional extra context pages — supplementary background only;
+#   # the AI uses them to inform rationale but must NOT introduce milestones from them.
+#   confluence_extra_pages:
+#     - "https://confluence.yourcompany.local/spaces/SPACE/pages/12347/Vendor+SDK+Notes"
+#     - "https://confluence.yourcompany.local/spaces/SPACE/pages/12348/Architecture+Overview"
 #   weekly_cutoff: "Mon 13:00"          # IST
 #   week_boundary: "monday"
 #   recompute_cadence: "daily"          # overrides global

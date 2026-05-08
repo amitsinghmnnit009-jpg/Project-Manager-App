@@ -57,6 +57,10 @@ class ConfluenceConfig(BaseModel):
     # Confluence DC rate-limits aggressively — a high retry count can burn
     # the per-token bucket faster than it refills. Default low.
     retry_total: int = 1
+    # Each extra context page (per project) is truncated to this many
+    # characters before being inserted into the Status Engine prompt. Keeps
+    # the context window predictable regardless of how long the page is.
+    extra_page_max_chars: int = 3000
 
 
 class DatabaseConfig(BaseModel):
@@ -117,8 +121,16 @@ class ProjectConfig(BaseModel):
     owning_pgm: str = ""
     start_date: Optional[str] = None
     planned_end_date: Optional[str] = None
-    confluence_page_url: str
     jira_project_key: str
+    # --- Confluence pages (FR §A.1.6 / CONFLUENCE_TEMPLATE_PHASE1.md) ---
+    # Two structured pages are required: one for milestones, one for FRs.
+    # Plus zero or more optional extra context pages whose body is added to
+    # the prompt as supplementary background (truncated per
+    # confluence.extra_page_max_chars).
+    confluence_milestones_url: str
+    confluence_fr_url: str
+    confluence_extra_pages: list[str] = Field(default_factory=list)
+    # --- Schedule + filtering ---
     weekly_cutoff: str = "Mon 13:00"
     week_boundary: Literal["monday", "sunday"] = "monday"
     recompute_cadence: Optional[Literal["daily", "hourly", "manual"]] = None

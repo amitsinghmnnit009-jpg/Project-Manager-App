@@ -10,7 +10,9 @@ Usage:
     python manage.py jira-task <issue_key>               # Comments + worklogs of one task
     python manage.py jira-activity <project_key>         # Engineer-grouped weekly activity
     python manage.py show-mapping [project_key]          # Diagnostic: see parsed engineer mapping
-    python manage.py fetch-confluence-page <url>         # Fetch+parse a Confluence project page
+    python manage.py fetch-confluence-page <url>         # Parse a Milestones page (default)
+    python manage.py fetch-confluence-page <url> --kind fr      # Parse a Functional Requirements page
+    python manage.py fetch-confluence-page <url> --kind extra   # Parse an extra context page
     python manage.py confluence-probe                    # Single-shot raw 429-diagnostic probe
     python manage.py llm-ping                            # Sanity check: send one short completion
     python manage.py llm-embed <text>                    # Sanity check: embed one piece of text
@@ -563,25 +565,70 @@ def confluence_probe(path, params):
 
 @cli.command("fetch-confluence-page")
 @click.argument("url")
-def fetch_confluence_page(url):
-    """Fetch and parse a Confluence project page (smoke test for the parser)."""
+@click.option("--kind", default="milestones",
+              type=click.Choice(["milestones", "fr", "extra"]),
+              help="Which parser to use (default: milestones). "
+                   "Pick the one matching the page's role.")
+@click.option("--max-chars", default=None, type=int,
+              help="Truncation cap for --kind extra (default: confluence.extra_page_max_chars from config)")
+def fetch_confluence_page(url, kind, max_chars):
+    """Fetch and parse one Confluence page using the parser matching its role.
+
+    Smoke test for the parsers. Use --kind=milestones for the project's
+    Milestones page, --kind=fr for its Functional Requirements page, and
+    --kind=extra for any supplementary context page.
+    """
     from app.clients import get_confluence_client, ConfluenceClient
+    from app.config import get_config
+
     client = get_confluence_client()
     try:
         page = client.get_page_by_url(url)
-        parsed = ConfluenceClient.parse_project_page(page)
     except Exception as e:
-        click.echo(f"[FAIL] {e}", err=True)
+        click.echo(f"[FAIL] fetch failed: {type(e).__name__}: {e}", err=True)
         sys.exit(1)
 
-    click.echo(f"Title: {parsed.title}")
-    click.echo(f"Overview: {parsed.overview[:200]!r}{'…' if len(parsed.overview) > 200 else ''}")
-    click.echo(f"Milestones found: {len(parsed.milestones)}")
-    for m in parsed.milestones:
-        click.echo(f"  - {m.name} | {m.quarter} | {m.planned_date} | "
-                   f"{m.priority} | status={m.status} | dep={m.dependency}")
-    click.echo(f"Functional Requirements ({len(parsed.functional_requirements)} chars): "
-               f"{parsed.functional_requirements[:200]!r}…")
+    if kind == "milestones":
+        parsed = ConfluenceClient.parse_milestones_page(page)
+        click.echo(f"Title:    {parsed.title}")
+        if parsed.overview:
+            click.echo(f"Overview: {parsed.overview[:200]!r}"
+                       + ("..." if len(parsed.overview) > 200 else ""))
+        click.echo(f"Milestones found: {len(parsed.milestones)}")
+        for m in parsed.milestones:
+            extra_bits = []
+            if m.quarter:
+                extra_bits.append(f"Q={m.quarter}")
+            if m.priority:
+                extra_bits.append(f"prio={m.priority}")
+            if m.dependency:
+                extra_bits.append(f"dep={m.dependency}")
+            if m.remark:
+                extra_bits.append(f"remark={m.remark[:40]}")
+            extras = (" [" + ", ".join(extra_bits) + "]") if extra_bits else ""
+            click.echo(f"  - {m.name} | {m.planned_date} | status={m.status}"
+                       f" | {m.description[:60]}{extras}")
+
+    elif kind == "fr":
+        parsed = ConfluenceClient.parse_fr_page(page)
+        click.echo(f"Title: {parsed.title}")
+        if parsed.overview:
+            click.echo(f"Overview: {parsed.overview[:200]!r}"
+                       + ("..." if len(parsed.overview) > 200 else ""))
+        click.echo(f"Functional Requirements ({len(parsed.functional_requirements)} chars):")
+        excerpt = parsed.functional_requirements[:500]
+        click.echo(f"  {excerpt!r}"
+                   + ("..." if len(parsed.functional_requirements) > 500 else ""))
+
+    else:  # extra
+        cap = max_chars if max_chars is not None else get_config().confluence.extra_page_max_chars
+        parsed = ConfluenceClient.parse_extra_page(page, max_chars=cap)
+        click.echo(f"Title:     {parsed.title}")
+        click.echo(f"Body:      {len(parsed.body_text)} chars"
+                   + (f" (truncated at {cap})" if parsed.truncated else ""))
+        click.echo(f"Excerpt:   {parsed.body_text[:300]!r}"
+                   + ("..." if len(parsed.body_text) > 300 else ""))
+
     if parsed.parse_warnings:
         click.echo("Warnings:")
         for w in parsed.parse_warnings:

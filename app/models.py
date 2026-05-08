@@ -37,7 +37,11 @@ class Project(Base):
     start_date = Column(Date, nullable=True)
     planned_end_date = Column(Date, nullable=True)
     state = Column(String(32), default="active")
-    confluence_page_url = Column(String(1024), nullable=False)
+    # Confluence pages (FR §A.1.6 — two structured pages required, plus
+    # zero or more optional extra context pages stored as a JSON list).
+    confluence_milestones_url = Column(String(1024), nullable=False)
+    confluence_fr_url = Column(String(1024), nullable=False)
+    confluence_extra_pages_json = Column(JSON, default=list)
     jira_project_key = Column(String(64), nullable=False)
     weekly_cutoff = Column(String(32), default="Mon 13:00")
     week_boundary = Column(String(16), default="monday")
@@ -131,11 +135,20 @@ class JiraTaskCache(Base):
 class ConfluencePageCache(Base):
     __tablename__ = "confluence_page_cache"
     __table_args__ = (
-        Index("idx_conf_cache_project", "project_id", unique=True),
+        # Unique on (project, kind, url) so each project has one cache row
+        # per (kind, url) tuple. A project has 1 milestones row, 1 fr row,
+        # and N extra rows (one per extra-page URL).
+        Index(
+            "idx_conf_cache_project_kind_url",
+            "project_id", "kind", "url",
+            unique=True,
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    kind = Column(String(16), nullable=False)   # 'milestones' | 'fr' | 'extra'
+    url = Column(String(1024), nullable=False)
     content_raw = Column(Text, default="")
     content_parsed_json = Column(JSON, default=dict)
     last_synced_at = Column(DateTime, default=datetime.utcnow)

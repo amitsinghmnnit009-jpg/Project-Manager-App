@@ -14,7 +14,9 @@ from app.clients.jira_client import (
 )
 from app.clients.confluence_client import (
     ConfluenceClient,
-    ProjectPageContent,
+    MilestonesPageContent,
+    FRsPageContent,
+    ExtraPageContent,
     MilestoneRow,
 )
 
@@ -22,7 +24,9 @@ __all__ = [
     "build_session", "RateLimitError", "rate_limit_wait",
     "JiraClient", "ActivityRecord", "JiraEngineerActivity",
     "JiraProjectSnapshot", "UnmappedAuthor",
-    "ConfluenceClient", "ProjectPageContent", "MilestoneRow",
+    "ConfluenceClient",
+    "MilestonesPageContent", "FRsPageContent", "ExtraPageContent",
+    "MilestoneRow",
 ]
 
 
