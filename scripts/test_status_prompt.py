@@ -39,7 +39,8 @@ CONFIDENCE_VALID = {"High", "Medium", "Low"}
 TL_STATUS_VALID = {"Pending", "In-progress", "Done", "Delayed", "Blocked", "Cancelled"}
 AI_VERIFICATION_VALID = {"Verified", "Disputed", "Inconclusive", "NotApplicable"}
 
-PROMPT_VERSION = "ProjectStatusReasoning/v1"
+PROMPT_VERSION = "ProjectStatusReasoning/v2"
+PROMPT_FILE = "project_status_reasoning_v2"
 
 
 # ---------- Project lookup ------------------------------------------------
@@ -108,6 +109,25 @@ def render_weekly_reports_block(reports: list) -> str:
     blocks = []
     for r in reports:
         blocks.append(f"--- Week of {r['week_of']} ---\n{r['content_markdown']}")
+    return "\n\n".join(blocks)
+
+
+def render_extra_pages_block(extra_pages: list) -> str:
+    """Render fetched ExtraPageContent objects into the prompt block.
+
+    Each page is delimited with its title for citation. Bodies are already
+    truncated by parse_extra_page (per confluence.extra_page_max_chars).
+    The system prompt's CRITICAL RULE 9 prevents the AI from treating
+    these as load-bearing — they're background only.
+    """
+    if not extra_pages:
+        return "(no extra context pages configured for this project)"
+    blocks = []
+    for ep in extra_pages:
+        marker = " [TRUNCATED]" if ep.truncated else ""
+        blocks.append(
+            f"--- Extra context page: {ep.title!r}{marker} ---\n{ep.body_text}"
+        )
     return "\n\n".join(blocks)
 
 
@@ -242,33 +262,64 @@ def main():
 
     cfg = get_config()
     project = find_project(cfg, args.project_code)
+    extra_max_chars = cfg.confluence.extra_page_max_chars
 
     print("=== Step 4: Standalone Prompt 3 Test ===")
-    print(f"Project:        {project.code} - {project.name} (type: {project.type})")
-    print(f"JIRA key:       {project.jira_project_key}")
-    print(f"Confluence URL: {project.confluence_page_url}")
-    print(f"Today (IST):    {today_ist().strftime('%Y-%m-%d')}")
+    print(f"Project:                {project.code} - {project.name} (type: {project.type})")
+    print(f"JIRA key:               {project.jira_project_key}")
+    print(f"Milestones page URL:    {project.confluence_milestones_url}")
+    print(f"FR page URL:            {project.confluence_fr_url}")
+    n_extras = len(project.confluence_extra_pages or [])
+    print(f"Extra context pages:    {n_extras}"
+          + (f" (capped at {extra_max_chars} chars each)" if n_extras else ""))
+    print(f"Today (IST):            {today_ist().strftime('%Y-%m-%d')}")
     print()
 
     # ---- 1. Confluence ---------------------------------------------------
-    print("[1/6] Fetching Confluence page...")
+    print("[1/6] Fetching Confluence pages (Milestones + FR + extras)...")
     confl = get_confluence_client()
+
+    # 1a. Milestones page (REQUIRED)
     try:
-        page = confl.get_page_by_url(project.confluence_page_url)
-        parsed_page = ConfluenceClient.parse_project_page(page)
+        mpage = confl.get_page_by_url(project.confluence_milestones_url)
+        ms = ConfluenceClient.parse_milestones_page(mpage)
     except Exception as e:
-        print(f"      [FAIL] {type(e).__name__}: {e}")
+        print(f"      [FAIL] Milestones page: {type(e).__name__}: {e}")
         sys.exit(3)
-    print(f"      Title:      {parsed_page.title}")
-    overview_excerpt = (parsed_page.overview or "")[:80]
-    print(f"      Overview:   {overview_excerpt!r}"
-          + ("..." if len(parsed_page.overview or "") > 80 else ""))
-    print(f"      Milestones: {len(parsed_page.milestones)} parsed")
-    print(f"      FRs:        {len(parsed_page.functional_requirements or '')} chars")
-    if parsed_page.parse_warnings:
-        print("      Parse warnings:")
-        for w in parsed_page.parse_warnings:
+    print(f"      Milestones page: {ms.title!r}")
+    if ms.overview:
+        print(f"        Overview:   {ms.overview[:80]!r}"
+              + ("..." if len(ms.overview) > 80 else ""))
+    print(f"        Milestones: {len(ms.milestones)} parsed")
+    if ms.parse_warnings:
+        for w in ms.parse_warnings:
             print(f"        ! {w}")
+
+    # 1b. Functional Requirements page (REQUIRED)
+    try:
+        fpage = confl.get_page_by_url(project.confluence_fr_url)
+        fr = ConfluenceClient.parse_fr_page(fpage)
+    except Exception as e:
+        print(f"      [FAIL] FR page: {type(e).__name__}: {e}")
+        sys.exit(3)
+    print(f"      FR page:         {fr.title!r}")
+    print(f"        FR text:    {len(fr.functional_requirements or '')} chars")
+    if fr.parse_warnings:
+        for w in fr.parse_warnings:
+            print(f"        ! {w}")
+
+    # 1c. Extra context pages (OPTIONAL — failures don't abort)
+    extras: list = []
+    for url in project.confluence_extra_pages or []:
+        try:
+            epage = confl.get_page_by_url(url)
+            ep = ConfluenceClient.parse_extra_page(epage, max_chars=extra_max_chars)
+            extras.append(ep)
+            mark = " [TRUNCATED]" if ep.truncated else ""
+            print(f"      Extra page: {ep.title!r} ({len(ep.body_text)} chars{mark})")
+        except Exception as e:
+            print(f"      [WARN] extra page {url} failed: {type(e).__name__}: {e}")
+            print(f"             (continuing — extras are optional)")
 
     # ---- 2. JIRA snapshot ------------------------------------------------
     print()
@@ -298,24 +349,29 @@ def main():
 
     # ---- 4. Render Prompt 3 ---------------------------------------------
     print()
-    print("[4/6] Rendering Prompt 3 from project_status_reasoning_v1.txt...")
-    sys_prompt, user_template = load_prompt("project_status_reasoning_v1")
+    print(f"[4/6] Rendering Prompt 3 from {PROMPT_FILE}.txt...")
+    sys_prompt, user_template = load_prompt(PROMPT_FILE)
     user_prompt = user_template.format(
         project_name=project.name,
         project_type=project.type,
         start_date=project.start_date or "(not set)",
         planned_end_date=project.planned_end_date or "(not set)",
         today_date=today_ist().strftime("%Y-%m-%d"),
-        confluence_overview=parsed_page.overview or "(none)",
-        confluence_milestones_block=render_milestones_block(parsed_page.milestones),
-        confluence_functional_requirements=(
-            parsed_page.functional_requirements or "(none)"
-        ),
+        # Milestones page
+        milestones_page_overview=ms.overview or "(none)",
+        confluence_milestones_block=render_milestones_block(ms.milestones),
+        # FR page
+        fr_page_overview=fr.overview or "(none)",
+        confluence_functional_requirements=fr.functional_requirements or "(none)",
+        # Extra context pages
+        extra_context_pages_block=render_extra_pages_block(extras),
+        # JIRA snapshot
         jira_total=snap.total_tasks,
         jira_status_block=render_jira_status_block(snap.by_status),
         jira_overdue_count=snap.overdue_count,
         jira_stale_count=snap.stale_count,
         jira_recent_activity_block=render_recent_activity(snap.recent_activity),
+        # Past weekly reports
         n_reports=args.n_reports,
         weekly_reports_block=render_weekly_reports_block(reports),
     )

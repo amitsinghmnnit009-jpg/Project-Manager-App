@@ -391,10 +391,12 @@ SAMPLE_PAGE_HTML = """
 """
 
 
-def test_parse_project_page_extracts_all_sections():
+def test_parse_milestones_page_extracts_overview_and_table():
+    """Milestones page parser: captures Project Overview + the milestones table.
+    Uses the legacy 8-column SAMPLE_PAGE_HTML to verify backwards compatibility."""
     page = {"title": "SSD Firmware v3",
             "body": {"storage": {"value": SAMPLE_PAGE_HTML}}}
-    parsed = ConfluenceClient.parse_project_page(page)
+    parsed = ConfluenceClient.parse_milestones_page(page)
 
     assert parsed.title == "SSD Firmware v3"
     assert "next-gen SSD controller" in parsed.overview
@@ -413,22 +415,141 @@ def test_parse_project_page_extracts_all_sections():
     assert m2.dependency == "M1"
     assert m2.remark == "Tentative"
 
+
+SLIM_TABLE_HTML = """
+<h1>Project Overview</h1>
+<p>Whitepaper on memory tiering for our research group.</p>
+<h2>Milestones</h2>
+<table>
+  <tbody>
+    <tr><th>Milestone</th><th>Planned Date</th><th>Status</th><th>Description</th></tr>
+    <tr><td>M1 — Lit review</td><td>2026-04-30</td><td>Done</td>
+        <td>30+ papers reviewed, key findings summarised</td></tr>
+    <tr><td>M2 — Draft v1</td><td>2026-06-15</td><td>In-progress</td>
+        <td>First full draft circulated to co-authors</td></tr>
+  </tbody>
+</table>
+<blockquote><em>M2 — priority P1, dependency: M1</em></blockquote>
+"""
+
+
+def test_parse_milestones_page_slim_4col_format():
+    """Slim 4-column milestones table (recommended for Phase 1 onwards)
+    must parse without warnings."""
+    page = {"title": "Memory Tiering Research",
+            "body": {"storage": {"value": SLIM_TABLE_HTML}}}
+    parsed = ConfluenceClient.parse_milestones_page(page)
+
+    assert "memory tiering" in parsed.overview
+    assert len(parsed.milestones) == 2
+    assert parsed.milestones[0].name == "M1 — Lit review"
+    assert parsed.milestones[0].status == "Done"
+    assert parsed.milestones[0].planned_date == "2026-04-30"
+    assert "30+ papers reviewed" in parsed.milestones[0].description
+    # Slim format leaves these empty — that's fine
+    assert parsed.milestones[0].quarter == ""
+    assert parsed.milestones[0].priority == ""
+    assert parsed.milestones[0].dependency == ""
+
+
+def test_parse_milestones_page_no_table_warns():
+    """Page with no table on it should produce a warning (and empty list)."""
+    html = "<h1>Project Overview</h1><p>This page has no table at all.</p>"
+    page = {"title": "Bare", "body": {"storage": {"value": html}}}
+    parsed = ConfluenceClient.parse_milestones_page(page)
+    assert parsed.milestones == []
+    assert any("table" in w.lower() for w in parsed.parse_warnings)
+
+
+def test_parse_milestones_page_finds_table_without_heading():
+    """If the page has a table but no 'Milestones' heading, parser should
+    still find it (the whole page IS the milestones page)."""
+    html = """
+    <table>
+      <tr><th>Milestone</th><th>Planned Date</th><th>Status</th><th>Description</th></tr>
+      <tr><td>M1</td><td>2026-05-01</td><td>Pending</td><td>x</td></tr>
+    </table>
+    """
+    page = {"title": "MS", "body": {"storage": {"value": html}}}
+    parsed = ConfluenceClient.parse_milestones_page(page)
+    assert len(parsed.milestones) == 1
+    assert parsed.milestones[0].name == "M1"
+
+
+def test_parse_milestones_page_handles_empty_body():
+    page = {"title": "Empty", "body": {"storage": {"value": ""}}}
+    parsed = ConfluenceClient.parse_milestones_page(page)
+    assert parsed.milestones == []
+    assert parsed.parse_warnings
+
+
+# ---------- FR page parser ----------
+
+FR_PAGE_HTML = """
+<h1>Project Overview</h1>
+<p>Build firmware for a next-generation SSD controller.</p>
+<h2>Functional Requirements</h2>
+<p>FR-1: Secure boot</p>
+<p>FR-2: Wear-levelling v3</p>
+<p>FR-3: Power-loss recovery</p>
+"""
+
+
+def test_parse_fr_page_extracts_overview_and_fr_text():
+    page = {"title": "SSDFW Functional Requirements",
+            "body": {"storage": {"value": FR_PAGE_HTML}}}
+    parsed = ConfluenceClient.parse_fr_page(page)
+
+    assert parsed.title == "SSDFW Functional Requirements"
+    assert "next-generation SSD controller" in parsed.overview
     assert "FR-1" in parsed.functional_requirements
     assert "FR-2" in parsed.functional_requirements
+    assert "FR-3" in parsed.functional_requirements
     assert parsed.parse_warnings == []
 
 
-def test_parse_project_page_handles_missing_milestones_section():
-    html = "<h1>Overview</h1><p>just text</p><h2>Functional Requirements</h2><p>FR-1</p>"
+def test_parse_fr_page_with_no_explicit_heading():
+    """If the FR page has no 'Functional Requirements' heading, the whole
+    body becomes the FR text (minus any captured Overview section)."""
+    html = "<p>FR-1: Secure boot</p><p>FR-2: Wear-levelling</p>"
     page = {"title": "X", "body": {"storage": {"value": html}}}
-    parsed = ConfluenceClient.parse_project_page(page)
-    assert parsed.milestones == []
-    assert any("Milestones" in w for w in parsed.parse_warnings)
+    parsed = ConfluenceClient.parse_fr_page(page)
+    assert "FR-1" in parsed.functional_requirements
+    assert "FR-2" in parsed.functional_requirements
 
 
-def test_parse_project_page_handles_empty_body():
+def test_parse_fr_page_handles_empty_body():
     page = {"title": "Empty", "body": {"storage": {"value": ""}}}
-    parsed = ConfluenceClient.parse_project_page(page)
+    parsed = ConfluenceClient.parse_fr_page(page)
+    assert parsed.parse_warnings
+
+
+# ---------- Extra page parser ----------
+
+def test_parse_extra_page_truncates_long_body():
+    """Long pages must be truncated to max_chars and flagged."""
+    long_body = "A" * 10000
+    html = f"<p>{long_body}</p>"
+    page = {"title": "Vendor SDK Notes",
+            "body": {"storage": {"value": html}}}
+    parsed = ConfluenceClient.parse_extra_page(page, max_chars=200)
+    assert parsed.truncated is True
+    assert len(parsed.body_text) > 200  # body_text + truncation marker
+    assert "[... truncated ...]" in parsed.body_text
+    assert parsed.title == "Vendor SDK Notes"
+
+
+def test_parse_extra_page_short_body_not_truncated():
+    html = "<p>Short notes about the architecture.</p>"
+    page = {"title": "Arch", "body": {"storage": {"value": html}}}
+    parsed = ConfluenceClient.parse_extra_page(page, max_chars=200)
+    assert parsed.truncated is False
+    assert "Short notes" in parsed.body_text
+
+
+def test_parse_extra_page_handles_empty_body():
+    page = {"title": "Empty", "body": {"storage": {"value": ""}}}
+    parsed = ConfluenceClient.parse_extra_page(page)
     assert parsed.parse_warnings
 
 
