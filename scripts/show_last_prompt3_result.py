@@ -28,6 +28,17 @@ import json
 import sys
 from pathlib import Path
 
+# Force UTF-8 stdout on Windows so prompt content (em-dashes, non-ASCII
+# project titles, Korean Confluence titles, etc.) prints correctly. The
+# console codepage on Windows is cp1252 by default, which mangles e.g.
+# em-dash and curly quotes that the LLM faithfully copies through.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
+
 
 ROOT = Path(__file__).resolve().parent.parent
 

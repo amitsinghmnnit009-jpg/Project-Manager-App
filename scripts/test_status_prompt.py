@@ -21,6 +21,17 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Force UTF-8 stdout on Windows so prompt content (em-dashes, non-ASCII
+# project titles, Korean Confluence titles, etc.) prints correctly. The
+# console codepage on Windows is cp1252 by default, which mangles e.g.
+# em-dash and curly quotes that the LLM faithfully copies through.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
+
 # Make `app` importable when run as a plain script.
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))

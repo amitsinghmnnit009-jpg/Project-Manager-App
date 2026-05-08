@@ -149,7 +149,7 @@ pytest tests/test_smoke.py    # smoke check
 | 1 | Repo scaffold | ✅ |
 | 2 | HTTP session + JIRA + Confluence clients | ✅ validated end-to-end against real JIRA DC + Confluence DC |
 | 3 | LLM client (Ollama + OpenAI-compatible) | ✅ validated against internal openai gateway (chat); embeddings endpoint not exposed by gateway, not used by Phase 1 |
-| 4 | Standalone Prompt 3 test script | ✅ implemented; awaiting first run against a real Confluence-filled project |
+| 4 | Standalone Prompt 3 test script | ✅ validated end-to-end against a real project — schema PASS, asymmetric trust invariant held, rationale cites specific milestone names + dates |
 | 5 | Project Registry + engineer mapping loader | ⬜ |
 | 6 | Aggregation Engine (Prompt 1) | ⬜ |
 | 7 | Highlights Engine (Prompt 2) | ⬜ |
