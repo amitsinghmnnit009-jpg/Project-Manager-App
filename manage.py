@@ -10,9 +10,10 @@ Usage:
     python manage.py jira-task <issue_key>               # Comments + worklogs of one task
     python manage.py jira-activity <project_key>         # Engineer-grouped weekly activity
     python manage.py show-mapping [project_key]          # Diagnostic: see parsed engineer mapping
-    python manage.py fetch-confluence-page <url>         # Parse a Milestones page (default)
+    python manage.py fetch-confluence-page <url>                # Parse a Milestones page (default)
     python manage.py fetch-confluence-page <url> --kind fr      # Parse a Functional Requirements page
     python manage.py fetch-confluence-page <url> --kind extra   # Parse an extra context page
+    python manage.py fetch-confluence-page <url> --full         # Print full text (no terminal truncation)
     python manage.py confluence-probe                    # Single-shot raw 429-diagnostic probe
     python manage.py llm-ping                            # Sanity check: send one short completion
     python manage.py llm-embed <text>                    # Sanity check: embed one piece of text
@@ -571,12 +572,23 @@ def confluence_probe(path, params):
                    "Pick the one matching the page's role.")
 @click.option("--max-chars", default=None, type=int,
               help="Truncation cap for --kind extra (default: confluence.extra_page_max_chars from config)")
-def fetch_confluence_page(url, kind, max_chars):
+@click.option("--full", "show_full", is_flag=True,
+              help="Print full text — no terminal-display truncation. "
+                   "Use this to verify your page content was parsed correctly. "
+                   "(Note: with --kind extra, content is still truncated to "
+                   "extra_page_max_chars at parse time — that is by design for "
+                   "the AI's token budget; pass --max-chars to override.)")
+def fetch_confluence_page(url, kind, max_chars, show_full):
     """Fetch and parse one Confluence page using the parser matching its role.
 
     Smoke test for the parsers. Use --kind=milestones for the project's
     Milestones page, --kind=fr for its Functional Requirements page, and
     --kind=extra for any supplementary context page.
+
+    By default the output is truncated for terminal readability — actual
+    parsed objects in memory always hold full text, and the AI prompts
+    never use the terminal-display truncation. Pass --full to see the
+    untruncated content for verification.
     """
     from app.clients import get_confluence_client, ConfluenceClient
     from app.config import get_config
@@ -588,12 +600,26 @@ def fetch_confluence_page(url, kind, max_chars):
         click.echo(f"[FAIL] fetch failed: {type(e).__name__}: {e}", err=True)
         sys.exit(1)
 
+    # Display caps. With --full each becomes "no cap"; the values below are
+    # only for the terminal — the parsed object holds full text either way.
+    overview_cap = None if show_full else 200
+    desc_cap = None if show_full else 60
+    remark_cap = None if show_full else 40
+    fr_cap = None if show_full else 500
+    extra_excerpt_cap = None if show_full else 300
+
+    def _trunc(s: str, cap):
+        """Truncate `s` to `cap` chars (or return as-is if cap is None)."""
+        if cap is None or s is None or len(s) <= cap:
+            return s
+        return s[:cap] + "..."
+
     if kind == "milestones":
         parsed = ConfluenceClient.parse_milestones_page(page)
         click.echo(f"Title:    {parsed.title}")
         if parsed.overview:
-            click.echo(f"Overview: {parsed.overview[:200]!r}"
-                       + ("..." if len(parsed.overview) > 200 else ""))
+            click.echo(f"Overview ({len(parsed.overview)} chars):")
+            click.echo(f"  {_trunc(parsed.overview, overview_cap)}")
         click.echo(f"Milestones found: {len(parsed.milestones)}")
         for m in parsed.milestones:
             extra_bits = []
@@ -604,30 +630,28 @@ def fetch_confluence_page(url, kind, max_chars):
             if m.dependency:
                 extra_bits.append(f"dep={m.dependency}")
             if m.remark:
-                extra_bits.append(f"remark={m.remark[:40]}")
+                extra_bits.append(f"remark={_trunc(m.remark, remark_cap)}")
             extras = (" [" + ", ".join(extra_bits) + "]") if extra_bits else ""
             click.echo(f"  - {m.name} | {m.planned_date} | status={m.status}"
-                       f" | {m.description[:60]}{extras}")
+                       f" | {_trunc(m.description, desc_cap)}{extras}")
 
     elif kind == "fr":
         parsed = ConfluenceClient.parse_fr_page(page)
         click.echo(f"Title: {parsed.title}")
         if parsed.overview:
-            click.echo(f"Overview: {parsed.overview[:200]!r}"
-                       + ("..." if len(parsed.overview) > 200 else ""))
+            click.echo(f"Overview ({len(parsed.overview)} chars):")
+            click.echo(f"  {_trunc(parsed.overview, overview_cap)}")
         click.echo(f"Functional Requirements ({len(parsed.functional_requirements)} chars):")
-        excerpt = parsed.functional_requirements[:500]
-        click.echo(f"  {excerpt!r}"
-                   + ("..." if len(parsed.functional_requirements) > 500 else ""))
+        click.echo(f"  {_trunc(parsed.functional_requirements, fr_cap)}")
 
     else:  # extra
         cap = max_chars if max_chars is not None else get_config().confluence.extra_page_max_chars
         parsed = ConfluenceClient.parse_extra_page(page, max_chars=cap)
         click.echo(f"Title:     {parsed.title}")
         click.echo(f"Body:      {len(parsed.body_text)} chars"
-                   + (f" (truncated at {cap})" if parsed.truncated else ""))
-        click.echo(f"Excerpt:   {parsed.body_text[:300]!r}"
-                   + ("..." if len(parsed.body_text) > 300 else ""))
+                   + (f" (parser-truncated at {cap})" if parsed.truncated else ""))
+        click.echo(f"Excerpt ({len(parsed.body_text)} chars):")
+        click.echo(f"  {_trunc(parsed.body_text, extra_excerpt_cap)}")
 
     if parsed.parse_warnings:
         click.echo("Warnings:")
