@@ -150,7 +150,7 @@ pytest tests/test_smoke.py    # smoke check
 | 2 | HTTP session + JIRA + Confluence clients | ✅ validated end-to-end against real JIRA DC + Confluence DC |
 | 3 | LLM client (Ollama + OpenAI-compatible) | ✅ validated against internal openai gateway (chat); embeddings endpoint not exposed by gateway, not used by Phase 1 |
 | 4 | Standalone Prompt 3 test script | ✅ validated end-to-end against a real project — schema PASS, asymmetric trust invariant held, rationale cites specific milestone names + dates |
-| 5 | Project Registry + engineer mapping loader | ⬜ |
+| 5 | Project Registry + engineer mapping loader | ✅ — sync from config.json on startup; lookup helpers; 21 tests |
 | 6 | Aggregation Engine (Prompt 1) | ⬜ |
 | 7 | Highlights Engine (Prompt 2) | ⬜ |
 | 8 | Status Engine (Prompt 3 wrapped) | ⬜ |
