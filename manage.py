@@ -12,6 +12,8 @@ Usage:
     python manage.py show-mapping [project_key]          # Diagnostic: see parsed engineer mapping
     python manage.py fetch-confluence-page <url>         # Fetch+parse a Confluence project page
     python manage.py confluence-probe                    # Single-shot raw 429-diagnostic probe
+    python manage.py llm-ping                            # Sanity check: send one short completion
+    python manage.py llm-embed <text>                    # Sanity check: embed one piece of text
 """
 from __future__ import annotations
 import sys
@@ -396,6 +398,76 @@ def show_mapping(project_key, engineers_file):
             for e in engineers_list:
                 if e.get("knox_id", "").strip().lower() in matched_norm:
                     click.echo(f"  - {e.get('name')} ({e.get('knox_id')})")
+
+
+@cli.command("llm-ping")
+@click.option("--prompt", default="Reply with exactly: OK",
+              help="User prompt to send (default: 'Reply with exactly: OK')")
+@click.option("--system", "system_prompt", default="You are a concise assistant. Answer briefly.",
+              help="System prompt to send")
+@click.option("--json-output", is_flag=True,
+              help="Request JSON-mode output (constrained decode where supported)")
+@click.option("--temperature", default=None, type=float,
+              help="Override config temperature for this call")
+def llm_ping(prompt, system_prompt, json_output, temperature):
+    """Send one short completion through the configured LLM provider.
+
+    Verifies that:
+      - Ollama is running (or the OpenAI-compatible gateway is reachable)
+      - The configured model is loaded / accessible
+      - Network + auth headers + timeouts are sane
+    Prints duration and token counts so you can spot warm vs cold start.
+    """
+    from app.llm.base import get_llm_client
+
+    try:
+        client = get_llm_client()
+    except Exception as e:
+        click.echo(f"[FAIL] could not build LLM client: {type(e).__name__}: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Provider: {client.mode}")
+    try:
+        result = client.complete(
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            temperature=temperature,
+            json_output=json_output,
+        )
+    except Exception as e:
+        click.echo(f"[FAIL] {type(e).__name__}: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Model:    {result.model}")
+    click.echo(f"Duration: {result.duration_seconds}s")
+    click.echo(f"Tokens:   {result.prompt_tokens} prompt + {result.completion_tokens} completion")
+    click.echo(f"Response ({len(result.text)} chars):")
+    click.echo(result.text)
+
+
+@cli.command("llm-embed")
+@click.argument("text")
+def llm_embed(text):
+    """Embed one piece of text. Verifies the embeddings endpoint works."""
+    from app.llm.base import get_llm_client
+
+    try:
+        client = get_llm_client()
+    except Exception as e:
+        click.echo(f"[FAIL] could not build LLM client: {type(e).__name__}: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Provider: {client.mode}")
+    try:
+        result = client.embed(text)
+    except Exception as e:
+        click.echo(f"[FAIL] {type(e).__name__}: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Model:        {result.model}")
+    click.echo(f"Vector dim:   {len(result.vector)}")
+    if result.vector:
+        click.echo(f"First 5 dims: {[round(x, 4) for x in result.vector[:5]]}")
 
 
 @cli.command("confluence-probe")
