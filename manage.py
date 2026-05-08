@@ -3,6 +3,9 @@
 Usage:
     python manage.py reset-db                            # Drop and recreate the SQLite DB
     python manage.py serve                               # Start the FastAPI server
+    python manage.py sync-projects                       # Sync config.json projects[] into DB
+    python manage.py list-projects                       # List projects currently in DB
+    python manage.py list-engineers [--project-code X]   # List engineers from mapping JSON
     python manage.py whoami-jira                         # Verify JIRA token
     python manage.py whoami-confluence                   # Verify Confluence token
     python manage.py jira-search <project_key>           # Search recent issues in JIRA
@@ -57,12 +60,108 @@ def serve(host, port, reload):
     )
 
 
+@cli.command("sync-projects")
+def sync_projects_cmd():
+    """Sync config.json's projects[] into the projects DB table.
+
+    Idempotent — safe to run any time. The FastAPI server also runs this
+    automatically on startup, but this CLI command is useful when:
+      - You edited config.json and want changes reflected without restart
+      - You want to verify the sync result before starting the server
+      - You're running CLI engines (run-status, run-aggregation, etc.)
+        before the server has been started.
+
+    Insert: project in config but not in DB by code -> insert.
+    Update: project in both -> overwrite syncable columns.
+    Delete: NOT performed. A project removed from config.json stays in
+            DB; the sync logs a warning. This protects history (status
+            timeline, weekly reports) from accidental config edits.
+    """
+    from app.db import init_database
+    from app.registry.projects import sync_projects_from_config
+
+    init_database()  # ensure tables exist
+    try:
+        report = sync_projects_from_config()
+    except Exception as e:
+        click.echo(f"[FAIL] {type(e).__name__}: {e}", err=True)
+        sys.exit(1)
+
+    click.echo("[OK] Project registry sync complete.")
+    click.echo(f"  Created:           {report['created']}")
+    click.echo(f"  Updated:           {report['updated']}")
+    click.echo(f"  Total in config:   {report['total_in_config']}")
+    click.echo(f"  Total in DB now:   {report['total_in_db_after']}")
+    if report["stale_codes"]:
+        click.echo(
+            f"  [WARN] Stale (in DB, not in config.json): {report['stale_codes']}"
+        )
+        click.echo(
+            "         These rows are LEFT UNCHANGED to protect history. "
+            "Hard-delete via direct DB edit if truly desired."
+        )
+
+
+@cli.command("list-projects")
+def list_projects_cmd():
+    """List every project currently in the DB."""
+    from app.registry.projects import list_projects
+    rows = list_projects()
+    if not rows:
+        click.echo("[INFO] No projects in DB. Run 'python manage.py sync-projects' first.")
+        return
+    click.echo(f"{len(rows)} project(s) in DB:")
+    for p in rows:
+        click.echo(
+            f"  - {p['code']:20s} | jira_key={p['jira_project_key']:12s} | "
+            f"state={p['state']:10s} | {p['name']}"
+        )
+
+
+@cli.command("list-engineers")
+@click.option("--project-code", default=None,
+              help="Filter to engineers assigned to this project")
+def list_engineers_cmd(project_code):
+    """List engineers from the engineer mapping JSON.
+
+    Without --project-code: lists every engineer + their assigned project codes.
+    With --project-code:    lists only engineers assigned to that project.
+    """
+    from app.registry.engineers import (
+        load_engineer_mapping, engineers_on_project, projects_for_engineer,
+    )
+
+    mapping = load_engineer_mapping()
+    if mapping.parse_warnings:
+        click.echo("[WARN] Mapping parse warnings:")
+        for w in mapping.parse_warnings:
+            click.echo(f"  ! {w}")
+        click.echo("")
+
+    if project_code:
+        engs = engineers_on_project(project_code)
+        if not engs:
+            click.echo(f"No engineers assigned to project {project_code!r}.")
+            return
+        click.echo(f"{len(engs)} engineer(s) assigned to {project_code!r}:")
+        for e in engs:
+            click.echo(f"  - {e.name:30s}  knox_id={e.knox_id}")
+    else:
+        click.echo(f"{len(mapping.engineers)} engineer(s) total:")
+        for e in mapping.engineers:
+            projects = projects_for_engineer(e.knox_id)
+            click.echo(
+                f"  - {e.name:30s}  knox_id={e.knox_id:20s}  "
+                f"projects={projects}"
+            )
+
+
 @cli.command("run-aggregation")
 @click.argument("project_code")
 def run_aggregation(project_code):
     """Manually trigger weekly aggregation for one project."""
     click.echo(f"[stub] Would run aggregation for {project_code}")
-    # TODO: wire up to engines.aggregation
+    # TODO Step 6: wire up to engines.aggregation
 
 
 @cli.command("run-status")
