@@ -11,6 +11,7 @@ Two main public methods:
 - get_project_snapshot(...)      → input for Prompt 3 (Project Status Reasoning)
 """
 from __future__ import annotations
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -19,7 +20,8 @@ from typing import Optional
 import requests
 
 from app.clients.http_session import build_session
-from app.utils.logging import system_log, sync_log
+from app.config import get_config
+from app.utils.logging import external_call_log, system_log, sync_log
 
 
 # Changelog fields that create noise without adding meaning. Drop before LLM.
@@ -211,9 +213,78 @@ class JiraClient:
     # ---------- low-level ------------------------------------------------
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
-        r = self.s.get(f"{self.base}{path}", params=params, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        """GET helper with optional full-call logging.
+
+        When config.logging.log_full_external_calls is True, every call
+        writes one JSONL line to logs/external_calls.jsonl with method,
+        path, query params (incl. JQL), status, duration, and a result
+        summary keyed off the response shape (issues / comments / worklogs).
+        Inspected via `manage.py show-last-external-calls`.
+        """
+        t0 = time.time()
+        try:
+            r = self.s.get(f"{self.base}{path}", params=params, timeout=30)
+        except Exception as e:
+            self._log_call(path, params, status=None,
+                           duration=round(time.time() - t0, 3),
+                           error=f"{type(e).__name__}: {e}")
+            raise
+        duration = round(time.time() - t0, 3)
+        try:
+            r.raise_for_status()
+        except Exception:
+            self._log_call(path, params, status=r.status_code, duration=duration,
+                           error=(r.text or "")[:300])
+            raise
+        data = r.json()
+        self._log_call(path, params, status=r.status_code, duration=duration,
+                       response=data)
+        return data
+
+    def _log_call(self, path: str, params: Optional[dict],
+                  *, status, duration: float,
+                  response=None, error: str = ""):
+        """Write one structured line to logs/external_calls.jsonl per JIRA
+        call. Gated by config.logging.log_full_external_calls."""
+        if not get_config().logging.log_full_external_calls:
+            return
+
+        extra: dict = {
+            "event": "jira_call",
+            "source": "jira",
+            "method": "GET",
+            "path": path,
+            "query_params": dict(params or {}),
+            "status": status,
+            "duration_seconds": duration,
+        }
+        if error:
+            extra["error"] = error
+        elif isinstance(response, dict):
+            # Build a result summary keyed off the response shape so the
+            # log line is greppable by content kind without dumping the
+            # full JSON payload.
+            if "issues" in response:
+                issues = response.get("issues") or []
+                extra["result_summary"] = {
+                    "issue_count": len(issues),
+                    "total": response.get("total", len(issues)),
+                    "first_keys": [i.get("key") for i in issues[:5]],
+                }
+            elif "comments" in response:
+                extra["result_summary"] = {
+                    "comment_count": len(response.get("comments") or [])
+                }
+            elif "worklogs" in response:
+                extra["result_summary"] = {
+                    "worklog_count": len(response.get("worklogs") or [])
+                }
+            elif "displayName" in response or "name" in response:
+                # /myself endpoint
+                extra["result_summary"] = {
+                    "user": response.get("name") or response.get("displayName") or ""
+                }
+        external_call_log().info("jira call", extra=extra)
 
     # ---------- whoami / health -----------------------------------------
 

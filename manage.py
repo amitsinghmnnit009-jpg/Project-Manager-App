@@ -23,6 +23,7 @@ Usage:
     python manage.py llm-ping                            # Sanity check: send one short completion
     python manage.py llm-embed <text>                    # Sanity check: embed one piece of text
     python manage.py show-last-llm-call [--lines N]      # Print full prompt+response of recent LLM call(s)
+    python manage.py show-last-external-calls [--source jira|confluence] [--lines N] [--errors-only]   # Print recent JIRA/Confluence calls
 """
 from __future__ import annotations
 import sys
@@ -605,6 +606,97 @@ def show_mapping(project_key, engineers_file):
             for e in engineers_list:
                 if e.get("knox_id", "").strip().lower() in matched_norm:
                     click.echo(f"  - {e.get('name')} ({e.get('knox_id')})")
+
+
+@cli.command("show-last-external-calls")
+@click.option("--source", default=None, type=click.Choice(["jira", "confluence"]),
+              help="Filter to one source")
+@click.option("--lines", default=5, type=int,
+              help="Print the last N entries (default 5)")
+@click.option("--errors-only", is_flag=True,
+              help="Only print entries that recorded an error")
+def show_last_external_calls(source, lines, errors_only):
+    """Print the most recent N entries from logs/external_calls.jsonl.
+
+    Each entry is one JIRA or Confluence HTTP call: method, path, query
+    params (including JQL for searches), status, duration, and a result
+    summary keyed off the response shape. Use this to debug 'why didn't
+    issue X show up?' / 'what JQL did we run?' / 'how slow are calls?'.
+
+    The companion file `logs/system.jsonl` carries higher-level engine
+    events (collect_engineer_activity start/done, retry warnings on 429)
+    — use this command when you need EVERY individual HTTP call.
+    """
+    import json as _json
+    from pathlib import Path
+    from app.config import get_config
+
+    cfg = get_config()
+    log_dir = Path(cfg.logging.directory)
+    if not log_dir.is_absolute():
+        log_dir = Path(__file__).resolve().parent / log_dir
+    path = log_dir / "external_calls.jsonl"
+
+    if not cfg.logging.log_full_external_calls:
+        click.echo("[INFO] config.logging.log_full_external_calls = false — "
+                   "no new JIRA/Confluence calls are being logged here.")
+        click.echo("       The high-level summaries + retry/error logs in "
+                   "logs/system.jsonl continue.")
+        click.echo("       To re-enable, set log_full_external_calls: true in config.json.")
+        click.echo("")
+
+    if not path.exists():
+        click.echo(f"[INFO] {path} does not exist yet.")
+        if cfg.logging.log_full_external_calls:
+            click.echo("       No external calls have been logged. Run a JIRA / Confluence command:")
+            click.echo("         python manage.py whoami-jira")
+            click.echo("         python manage.py whoami-confluence")
+            click.echo("         python manage.py jira-search <PROJ>")
+            click.echo("         python manage.py run-aggregation <code>")
+        return
+
+    entries: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            if source and e.get("source") != source:
+                continue
+            if errors_only and not e.get("error"):
+                continue
+            entries.append(e)
+
+    if not entries:
+        click.echo(f"[INFO] No matching entries in {path}.")
+        return
+
+    last_n = entries[-lines:]
+    for i, e in enumerate(last_n, 1):
+        click.echo(f"========== Entry {i} of {len(last_n)} ==========")
+        click.echo(f"ts:         {e.get('ts')}")
+        click.echo(f"source:     {e.get('source')}")
+        click.echo(f"method:     {e.get('method')}")
+        click.echo(f"path:       {e.get('path')}")
+        params = e.get("query_params") or {}
+        if params:
+            click.echo("query_params:")
+            for k, v in params.items():
+                # JQL is the most useful field — surface it on its own line
+                click.echo(f"  {k}: {v}")
+        click.echo(f"status:     {e.get('status')}")
+        click.echo(f"duration:   {e.get('duration_seconds')}s")
+        if e.get("error"):
+            click.echo(f"error:      {e.get('error')}")
+        if e.get("result_summary"):
+            click.echo("result_summary:")
+            for k, v in (e.get("result_summary") or {}).items():
+                click.echo(f"  {k}: {v}")
+        click.echo("")
 
 
 @cli.command("show-last-llm-call")

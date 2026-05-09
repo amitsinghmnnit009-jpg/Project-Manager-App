@@ -84,6 +84,13 @@ class LoggingConfig(BaseModel):
     # 200-char excerpt in logs/ai_compute.jsonl + AIComputeLog DB row are
     # still kept, so the audit trail remains intact.
     log_full_llm_prompts: bool = True
+    # When True (default while stabilising), every JIRA / Confluence HTTP
+    # call writes a structured line to logs/external_calls.jsonl with the
+    # full path + query params (including JQL) + result summary + duration.
+    # Inspect via `manage.py show-last-external-calls`. Set to False once
+    # stable — the high-level engine summaries + retry/error logs in
+    # system.jsonl continue regardless.
+    log_full_external_calls: bool = True
 
 
 class SchedulerConfig(BaseModel):

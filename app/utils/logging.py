@@ -100,3 +100,23 @@ def prompt_log() -> logging.Logger:
 
     Used by `python manage.py show-last-llm-call` for ad-hoc inspection."""
     return get_logger("llm_prompts")
+
+
+def external_call_log() -> logging.Logger:
+    """Full per-call log of every JIRA / Confluence HTTP call.
+
+    One JSONL line per call, written to `logs/external_calls.jsonl`. Each
+    line records: source ('jira'|'confluence'), method, path, query_params,
+    JQL (when present), status, duration_seconds, and a result_summary
+    keyed off the response shape (issue_count + first keys for searches,
+    comment/worklog count for sub-resource fetches, page id+title for
+    Confluence content).
+
+    Used by `python manage.py show-last-external-calls` for ad-hoc inspection
+    when debugging 'why didn't issue X show up' / 'what did we ask JIRA?'.
+
+    Gated by `config.logging.log_full_external_calls` (default True while
+    the app is stabilising — flip to False once stable). The compact retry/
+    error logs in `system.jsonl` continue regardless — disabling this only
+    drops the verbose per-call log."""
+    return get_logger("external_calls")

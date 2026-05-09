@@ -19,7 +19,8 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.clients.http_session import build_session, rate_limit_wait
-from app.utils.logging import system_log, sync_log
+from app.config import get_config
+from app.utils.logging import external_call_log, system_log, sync_log
 
 
 # ---------- Public dataclasses --------------------------------------------
@@ -184,11 +185,78 @@ class ConfluenceClient:
     # ---------- low-level ------------------------------------------------
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
+        """GET helper with optional full-call logging.
+
+        When config.logging.log_full_external_calls is True, every call
+        writes one JSONL line to logs/external_calls.jsonl with method,
+        path, query params, status, duration, and a result summary keyed
+        off the response shape (page id+title for /content fetches, count
+        for collections). Inspected via `manage.py show-last-external-calls`.
+
+        The pre-call sleep (request_delay_seconds) runs BEFORE the timer
+        starts so the duration reflects actual HTTP time, not throttling.
+        """
         if self.delay:
             time.sleep(self.delay)
-        r = self.s.get(f"{self.base}{path}", params=params, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        t0 = time.time()
+        try:
+            r = self.s.get(f"{self.base}{path}", params=params, timeout=30)
+        except Exception as e:
+            self._log_call(path, params, status=None,
+                           duration=round(time.time() - t0, 3),
+                           error=f"{type(e).__name__}: {e}")
+            raise
+        duration = round(time.time() - t0, 3)
+        try:
+            r.raise_for_status()
+        except Exception:
+            self._log_call(path, params, status=r.status_code, duration=duration,
+                           error=(r.text or "")[:300])
+            raise
+        data = r.json()
+        self._log_call(path, params, status=r.status_code, duration=duration,
+                       response=data)
+        return data
+
+    def _log_call(self, path: str, params: Optional[dict],
+                  *, status, duration: float,
+                  response=None, error: str = ""):
+        """Write one structured line to logs/external_calls.jsonl per
+        Confluence call. Gated by config.logging.log_full_external_calls."""
+        if not get_config().logging.log_full_external_calls:
+            return
+
+        extra: dict = {
+            "event": "confluence_call",
+            "source": "confluence",
+            "method": "GET",
+            "path": path,
+            "query_params": dict(params or {}),
+            "status": status,
+            "duration_seconds": duration,
+        }
+        if error:
+            extra["error"] = error
+        elif isinstance(response, dict):
+            # Result summary keyed off the response shape — single page
+            # vs collection vs space-list — so the log is greppable by
+            # content kind without dumping the full JSON.
+            if "results" in response:
+                results = response.get("results") or []
+                extra["result_summary"] = {
+                    "result_count": len(results),
+                    "size": response.get("size", len(results)),
+                    "first_titles": [
+                        (r.get("title") or "")[:60] for r in results[:5]
+                    ],
+                }
+            elif "id" in response and "title" in response:
+                extra["result_summary"] = {
+                    "page_id": response.get("id"),
+                    "title": (response.get("title") or "")[:80],
+                    "type": response.get("type", ""),
+                }
+        external_call_log().info("confluence call", extra=extra)
 
     # ---------- whoami / health -----------------------------------------
 
