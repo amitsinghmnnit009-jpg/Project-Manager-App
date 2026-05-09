@@ -100,12 +100,18 @@ def sync_projects_from_config() -> dict:
 
     Returns a small summary dict so CLI / startup hook can print it:
         {
-          "created":             <int>,
-          "updated":             <int>,
+          "created_count":       <int>,   # number of newly-inserted rows
+          "updated_count":       <int>,   # number of existing rows refreshed
           "total_in_config":     <int>,
           "total_in_db_after":   <int>,
           "stale_codes":         [<codes in DB not in config>],
         }
+
+    Note on key names: 'created' / 'updated' are tempting but 'created' is
+    a reserved attribute on Python's LogRecord (it's the log line's own
+    timestamp). Passing it via `extra={...}` raises KeyError. Using
+    `created_count` / `updated_count` avoids the collision and is also
+    less ambiguous to the reader.
 
     Idempotent — safe to call repeatedly. Code matches are exact (no
     case-folding) because `code` is the project's canonical identifier
@@ -115,8 +121,8 @@ def sync_projects_from_config() -> dict:
     cfg = get_config()
     config_codes = {p.code for p in cfg.projects}
 
-    created = 0
-    updated = 0
+    created_count = 0
+    updated_count = 0
 
     with session_scope() as s:
         for pcfg in cfg.projects:
@@ -129,11 +135,11 @@ def sync_projects_from_config() -> dict:
             if row is None:
                 row = Project(**data)
                 s.add(row)
-                created += 1
+                created_count += 1
             else:
                 for k, v in data.items():
                     setattr(row, k, v)
-                updated += 1
+                updated_count += 1
 
         # Detect stale projects (in DB but no longer in config)
         all_db_codes = list(s.execute(select(Project.code)).scalars().all())
@@ -147,8 +153,8 @@ def sync_projects_from_config() -> dict:
         )
 
     report = {
-        "created": created,
-        "updated": updated,
+        "created_count": created_count,
+        "updated_count": updated_count,
         "total_in_config": len(cfg.projects),
         "total_in_db_after": total_in_db_after,
         "stale_codes": stale,

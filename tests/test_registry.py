@@ -153,8 +153,8 @@ def test_sync_inserts_new_projects(fresh_db, fake_config):
     from app.registry.projects import sync_projects_from_config
 
     report = sync_projects_from_config()
-    assert report["created"] == 2
-    assert report["updated"] == 0
+    assert report["created_count"] == 2
+    assert report["updated_count"] == 0
     assert report["total_in_db_after"] == 2
     assert report["stale_codes"] == []
 
@@ -165,8 +165,8 @@ def test_sync_is_idempotent(fresh_db, fake_config):
 
     sync_projects_from_config()
     second = sync_projects_from_config()
-    assert second["created"] == 0
-    assert second["updated"] == 1
+    assert second["created_count"] == 0
+    assert second["updated_count"] == 1
     assert second["total_in_db_after"] == 1
 
 

@@ -88,8 +88,8 @@ def sync_projects_cmd():
         sys.exit(1)
 
     click.echo("[OK] Project registry sync complete.")
-    click.echo(f"  Created:           {report['created']}")
-    click.echo(f"  Updated:           {report['updated']}")
+    click.echo(f"  Created:           {report['created_count']}")
+    click.echo(f"  Updated:           {report['updated_count']}")
     click.echo(f"  Total in config:   {report['total_in_config']}")
     click.echo(f"  Total in DB now:   {report['total_in_db_after']}")
     if report["stale_codes"]:
