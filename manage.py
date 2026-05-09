@@ -6,6 +6,8 @@ Usage:
     python manage.py sync-projects                       # Sync config.json projects[] into DB
     python manage.py list-projects                       # List projects currently in DB
     python manage.py list-engineers [--project-code X]   # List engineers from mapping JSON
+    python manage.py run-status <project_code>           # Status Engine: compute + persist
+    python manage.py run-aggregation <project_code>      # Aggregation Engine (stub — Step 6)
     python manage.py whoami-jira                         # Verify JIRA token
     python manage.py whoami-confluence                   # Verify Confluence token
     python manage.py jira-search <project_key>           # Search recent issues in JIRA
@@ -167,9 +169,52 @@ def run_aggregation(project_code):
 @cli.command("run-status")
 @click.argument("project_code")
 def run_status(project_code):
-    """Manually trigger project status computation for one project."""
-    click.echo(f"[stub] Would run status compute for {project_code}")
-    # TODO: wire up to engines.status
+    """Manually trigger project status computation for one project.
+
+    Runs the full Status Engine pipeline:
+      Confluence (Milestones + FR + extras) + JIRA snapshot + past weekly
+      reports → Prompt 3 v2 → LLM → schema-validated JSON → DB.
+
+    On success: persists ProjectStatus (upsert) + appends ProjectStatusHistory
+    if health/schedule/completion changed since the last compute. Always
+    appends an AIComputeLog row regardless of success.
+
+    The same engine runs on the daily scheduler (Step 9) once that's wired.
+    """
+    from app.engines.status import run_status_compute
+
+    result = run_status_compute(project_code)
+
+    if not result.success:
+        click.echo(f"[FAIL] Status compute failed: {result.error}", err=True)
+        if result.issues:
+            click.echo("Validation issues:")
+            for i in result.issues:
+                click.echo(f"  - {i}")
+        if result.raw_response:
+            click.echo("Raw response (first 500 chars):")
+            click.echo(result.raw_response[:500])
+        sys.exit(1)
+
+    click.echo("[OK] Status compute succeeded.")
+    click.echo(f"  LLM mode:        {result.llm_mode}")
+    click.echo(f"  Duration:        {result.duration_seconds}s")
+    click.echo(
+        f"  Tokens:          {result.prompt_tokens} prompt + "
+        f"{result.completion_tokens} completion"
+    )
+    p = result.parsed or {}
+    click.echo(f"  Overall health:  {p.get('overall_health')}")
+    click.echo(f"  Schedule:        {p.get('schedule_status')}")
+    click.echo(f"  Completion %:    {p.get('completion_pct')}")
+    click.echo(f"  Confidence:      {p.get('confidence')}")
+    click.echo(f"  Milestones:      {len(p.get('milestones') or [])}")
+    if result.changed is True:
+        click.echo("  Changed since last compute? YES — history row appended.")
+    elif result.changed is False:
+        click.echo("  Changed since last compute? no — current row refreshed only.")
+    else:
+        click.echo("  Changed since last compute? (n/a — first compute for this project).")
 
 
 @cli.command("whoami-jira")

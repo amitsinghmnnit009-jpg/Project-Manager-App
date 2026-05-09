@@ -153,7 +153,7 @@ pytest tests/test_smoke.py    # smoke check
 | 5 | Project Registry + engineer mapping loader | ✅ — sync from config.json on startup; lookup helpers; 21 tests |
 | 6 | Aggregation Engine (Prompt 1) | ⬜ |
 | 7 | Highlights Engine (Prompt 2) | ⬜ |
-| 8 | Status Engine (Prompt 3 wrapped) | ⬜ |
+| 8 | Status Engine (Prompt 3 wrapped) | ✅ — `run_status_compute()` + persistence; 11 tests with mocked LLM/JIRA/Confluence |
 | 9 | Scheduler | ⬜ |
 | 10 | Notifications (mocked SMTP) | ⬜ |
 | 11 | API routes | ⬜ |
