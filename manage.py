@@ -22,6 +22,7 @@ Usage:
     python manage.py confluence-probe                    # Single-shot raw 429-diagnostic probe
     python manage.py llm-ping                            # Sanity check: send one short completion
     python manage.py llm-embed <text>                    # Sanity check: embed one piece of text
+    python manage.py show-last-llm-call [--lines N]      # Print full prompt+response of recent LLM call(s)
 """
 from __future__ import annotations
 import sys
@@ -604,6 +605,103 @@ def show_mapping(project_key, engineers_file):
             for e in engineers_list:
                 if e.get("knox_id", "").strip().lower() in matched_norm:
                     click.echo(f"  - {e.get('name')} ({e.get('knox_id')})")
+
+
+@cli.command("show-last-llm-call")
+@click.option("--mode", default=None, type=click.Choice(["ollama", "openai"]),
+              help="Filter to one provider")
+@click.option("--lines", default=1, type=int,
+              help="Print the last N entries (default 1)")
+@click.option("--prompt-only", is_flag=True,
+              help="Print only the system + user prompt; skip the response")
+@click.option("--response-only", is_flag=True,
+              help="Print only the response; skip the prompts")
+def show_last_llm_call(mode, lines, prompt_only, response_only):
+    """Print the most recent N entries from logs/llm_prompts.jsonl.
+
+    Each entry is one full LLM call: system prompt + user prompt + raw
+    response, plus mode/model/duration/tokens metadata. Use this to debug
+    what was actually sent to the LLM by the most recent engine run.
+
+    The companion file `logs/ai_compute.jsonl` carries a 200-char excerpt
+    only — use this command when you need the FULL text.
+    """
+    import json as _json
+    from pathlib import Path
+    from app.config import get_config
+
+    cfg = get_config()
+    log_dir = Path(cfg.logging.directory)
+    if not log_dir.is_absolute():
+        log_dir = Path(__file__).resolve().parent / log_dir
+    path = log_dir / "llm_prompts.jsonl"
+
+    # Surface the gate state up-front so the user knows whether new calls
+    # will continue to populate this log.
+    if not cfg.logging.log_full_llm_prompts:
+        click.echo("[INFO] config.logging.log_full_llm_prompts = false — "
+                   "no new LLM calls are being logged here.")
+        click.echo("       The 200-char excerpt in logs/ai_compute.jsonl + "
+                   "the AIComputeLog DB table are still kept.")
+        click.echo("       To re-enable, set log_full_llm_prompts: true in config.json.")
+        click.echo("")
+
+    if not path.exists():
+        click.echo(f"[INFO] {path} does not exist yet.")
+        if cfg.logging.log_full_llm_prompts:
+            click.echo("       No LLM calls have been logged. Run an engine first:")
+            click.echo("         python manage.py run-status <code>")
+            click.echo("         python manage.py run-aggregation <code>")
+            click.echo("         python manage.py llm-ping")
+        return
+
+    entries: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            if mode and e.get("mode") != mode:
+                continue
+            entries.append(e)
+
+    if not entries:
+        click.echo(f"[INFO] No matching entries in {path}.")
+        if mode:
+            click.echo(f"       Filter applied: mode={mode!r}. Try without --mode.")
+        return
+
+    # Show the rotation backup files too if user asked for more lines than
+    # the active file holds — Phase 1 simplification: just print what's in
+    # the active file. Backups can be inspected manually if needed.
+    last_n = entries[-lines:]
+    for i, e in enumerate(last_n, 1):
+        click.echo(f"========== Entry {i} of {len(last_n)} ==========")
+        click.echo(f"ts:               {e.get('ts')}")
+        click.echo(f"mode:             {e.get('mode')}")
+        click.echo(f"model:            {e.get('model')}")
+        click.echo(f"duration:         {e.get('duration_seconds')}s")
+        click.echo(
+            f"tokens:           {e.get('prompt_tokens')} prompt + "
+            f"{e.get('completion_tokens')} completion"
+        )
+        click.echo(f"json_output:      {e.get('json_output')}")
+        click.echo("")
+        if not response_only:
+            click.echo("--- System prompt ---")
+            click.echo(e.get("system_prompt", "(empty)"))
+            click.echo("")
+            click.echo("--- User prompt ---")
+            click.echo(e.get("user_prompt", "(empty)"))
+            click.echo("")
+        if not prompt_only:
+            click.echo("--- Response ---")
+            click.echo(e.get("response", "(empty)"))
+            click.echo("")
 
 
 @cli.command("llm-ping")

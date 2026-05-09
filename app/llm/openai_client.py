@@ -16,7 +16,7 @@ from openai import OpenAI
 
 from app.llm.base import LLMClient, CompletionResult, EmbeddingResult
 from app.config import get_config
-from app.utils.logging import ai_compute_log, system_log
+from app.utils.logging import ai_compute_log, prompt_log, system_log
 
 
 class OpenAICompatibleClient(LLMClient):
@@ -96,6 +96,25 @@ class OpenAICompatibleClient(LLMClient):
                 "response_excerpt": text[:200],
             },
         )
+        # Full prompt + raw response → separate JSONL for debugging /
+        # prompt-tuning workflows. Gated by config.logging.log_full_llm_prompts
+        # so it can be turned off in production once prompts are stable.
+        # When off, the compact audit trail in ai_compute.jsonl + the
+        # AIComputeLog DB table is still written (those are unconditional).
+        if get_config().logging.log_full_llm_prompts:
+            prompt_log().info(
+                "llm full call",
+                extra={
+                    "event": "llm_full_call", "mode": "openai",
+                    "model": self._cfg.model, "duration_seconds": duration,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "json_output": json_output,
+                    "system_prompt": system_prompt,
+                    "user_prompt": user_prompt,
+                    "response": text,
+                },
+            )
         return CompletionResult(
             text=text, model=self._cfg.model,
             prompt_tokens=prompt_tokens,

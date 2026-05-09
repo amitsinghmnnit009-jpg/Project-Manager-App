@@ -87,3 +87,16 @@ def sync_log() -> logging.Logger:
 
 def reminder_log() -> logging.Logger:
     return get_logger("reminder")
+
+
+def prompt_log() -> logging.Logger:
+    """Full prompt + raw response per LLM call. Written by every LLM client's
+    complete()/embed() method.
+
+    Separate file (`logs/llm_prompts.jsonl`) from `ai_compute.jsonl` because
+    full prompts are large (a few KB each) and would bloat the audit-trail
+    log. This file is rotated by size like every other category — defaults
+    in config.json's `logging` section bound the on-disk footprint.
+
+    Used by `python manage.py show-last-llm-call` for ad-hoc inspection."""
+    return get_logger("llm_prompts")

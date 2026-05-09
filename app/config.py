@@ -77,6 +77,13 @@ class LoggingConfig(BaseModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     rotate_max_bytes: int = 10 * 1024 * 1024
     rotate_backups: int = 10
+    # When True (default for now while the app is stabilising), every LLM
+    # call writes its FULL system_prompt + user_prompt + raw response to
+    # logs/llm_prompts.jsonl. Inspect via `manage.py show-last-llm-call`.
+    # Set to False in production / once prompts have stabilised — the
+    # 200-char excerpt in logs/ai_compute.jsonl + AIComputeLog DB row are
+    # still kept, so the audit trail remains intact.
+    log_full_llm_prompts: bool = True
 
 
 class SchedulerConfig(BaseModel):
