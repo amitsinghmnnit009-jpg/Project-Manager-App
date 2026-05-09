@@ -97,6 +97,13 @@ class SchedulerConfig(BaseModel):
     status_recompute_cadence: Literal["daily", "hourly", "manual"] = "daily"
     weekly_aggregation_offset_minutes: int = 5
     timezone: str = "Asia/Kolkata"
+    # Hour of day (0-23) at which the daily status recompute fires.
+    # Default 6am IST so PGM sees fresh status at start of day.
+    daily_status_hour: int = 6
+    # APScheduler grace period for jobs that missed their scheduled fire
+    # because the process was down. 24h means a daily job that missed its
+    # window still runs once the process is back up. Set to 0 to disable.
+    misfire_grace_seconds: int = 24 * 3600
 
 
 class EmailConfig(BaseModel):

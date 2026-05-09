@@ -9,6 +9,7 @@ Usage:
     python manage.py run-status <project_code>           # Status Engine: compute + persist
     python manage.py run-aggregation <project_code>      # Aggregation Engine: weekly report (Step 6)
     python manage.py run-highlights <project_code>       # Highlights Engine: week-over-week (Step 7)
+    python manage.py scheduler-status                    # List APScheduler jobs and next run times
     python manage.py whoami-jira                         # Verify JIRA token
     python manage.py whoami-confluence                   # Verify Confluence token
     python manage.py jira-search <project_key>           # Search recent issues in JIRA
@@ -286,6 +287,46 @@ def run_highlights(project_code, week_of):
     click.echo("")
     click.echo("=== Updated full report (with Highlights spliced in) ===")
     click.echo(result.content_markdown)
+
+
+@cli.command("scheduler-status")
+def scheduler_status():
+    """Build a scheduler from current config + DB and print all jobs that
+    WOULD be registered at server startup, with their next run times.
+
+    Does NOT actually start the scheduler — safe to run on the office
+    machine without firing any LLM/JIRA work.
+    """
+    from app.config import get_config
+    from app.scheduler import _build_scheduler
+    from app.registry.projects import list_projects
+
+    cfg = get_config()
+    projects = list_projects()
+    if not projects:
+        click.echo("[INFO] No projects in DB. Run 'sync-projects' first.")
+        return
+
+    sched = _build_scheduler(cfg)
+    jobs = sched.get_jobs()
+    if not jobs:
+        click.echo(f"[INFO] {len(projects)} project(s) but no jobs registered "
+                   "(check status_recompute_cadence + weekly_cutoff).")
+        return
+
+    click.echo(f"[OK] {len(jobs)} job(s) registered for "
+               f"{len(projects)} project(s):")
+    click.echo(f"  Timezone:                {cfg.scheduler.timezone}")
+    click.echo(f"  Daily status hour:       {cfg.scheduler.daily_status_hour:02d}:00")
+    click.echo(f"  Weekly aggregation offset: +{cfg.scheduler.weekly_aggregation_offset_minutes} min after cutoff")
+    click.echo(f"  Misfire grace:           {cfg.scheduler.misfire_grace_seconds}s")
+    click.echo("")
+    for job in sorted(jobs, key=lambda j: j.id):
+        next_run = job.next_run_time
+        next_str = next_run.strftime("%Y-%m-%d %H:%M %Z") if next_run else "(not scheduled)"
+        click.echo(f"  {job.id:30s}  next: {next_str}")
+        click.echo(f"    name:   {job.name}")
+        click.echo(f"    trigger: {job.trigger}")
 
 
 @cli.command("run-status")

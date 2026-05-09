@@ -42,10 +42,29 @@ async def lifespan(app: FastAPI):
             extra={"event": "startup_engineers_failed", "error": str(e),
                    "type": type(e).__name__},
         )
-    # TODO Step 9: start_scheduler()
+    # Step 9: start the APScheduler that triggers daily status recompute +
+    # weekly aggregation→highlights pipeline per project. Wrapped in
+    # try/except — a scheduler failure must not block the API serving
+    # /health and other read-only routes.
+    from app.scheduler import start_scheduler, stop_scheduler
+    try:
+        start_scheduler()
+    except Exception as e:
+        log.error(
+            "scheduler failed to start",
+            extra={"event": "startup_scheduler_failed",
+                   "error": str(e), "type": type(e).__name__},
+        )
     yield
     log.info("shutdown")
-    # TODO Step 9: stop_scheduler()
+    try:
+        stop_scheduler()
+    except Exception as e:
+        log.error(
+            "scheduler failed to stop cleanly",
+            extra={"event": "shutdown_scheduler_failed",
+                   "error": str(e), "type": type(e).__name__},
+        )
 
 
 app = FastAPI(

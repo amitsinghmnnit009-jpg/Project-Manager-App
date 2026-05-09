@@ -154,7 +154,7 @@ pytest tests/test_smoke.py    # smoke check
 | 6 | Aggregation Engine (Prompt 1) | ✅ — `run_weekly_aggregation()` + per-engineer JIRA pull + Prompt 1 + WeeklyReport upsert with regenerate semantics; 10 tests with mocked LLM/JIRA |
 | 7 | Highlights Engine (Prompt 2) | ✅ — `run_highlights()` + week-over-week comparison + splice into WeeklyReport's Highlights section; ~25 tests with mocked LLM |
 | 8 | Status Engine (Prompt 3 wrapped) | ✅ — `run_status_compute()` + persistence; 11 tests with mocked LLM/JIRA/Confluence |
-| 9 | Scheduler | ⬜ |
+| 9 | Scheduler | ✅ — APScheduler in FastAPI lifespan; per-project daily status job + weekly aggregation→highlights pipeline (cutoff + offset); idempotent start/stop; misfire grace; scheduler-status CLI; ~20 tests |
 | 10 | Notifications (mocked SMTP) | ⬜ |
 | 11 | API routes | ⬜ |
 | 12 | End-to-end test on one real project | ⬜ |
