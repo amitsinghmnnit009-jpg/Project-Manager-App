@@ -321,8 +321,25 @@ def scheduler_status():
     click.echo(f"  Weekly aggregation offset: +{cfg.scheduler.weekly_aggregation_offset_minutes} min after cutoff")
     click.echo(f"  Misfire grace:           {cfg.scheduler.misfire_grace_seconds}s")
     click.echo("")
+
+    # APScheduler 3.x sets `next_run_time` on the Job; some versions or
+    # not-yet-started schedulers don't expose that attribute. Compute next
+    # fire time from the trigger directly so this CLI works regardless.
+    import pytz
+    from datetime import datetime as _dt
+    tz = pytz.timezone(cfg.scheduler.timezone)
+    now = _dt.now(tz)
+
     for job in sorted(jobs, key=lambda j: j.id):
-        next_run = job.next_run_time
+        next_run = (
+            getattr(job, "next_run_time", None)
+            or getattr(job, "next_fire_time", None)  # APScheduler 4.x rename
+        )
+        if next_run is None:
+            try:
+                next_run = job.trigger.get_next_fire_time(None, now)
+            except Exception:
+                next_run = None
         next_str = next_run.strftime("%Y-%m-%d %H:%M %Z") if next_run else "(not scheduled)"
         click.echo(f"  {job.id:30s}  next: {next_str}")
         click.echo(f"    name:   {job.name}")
