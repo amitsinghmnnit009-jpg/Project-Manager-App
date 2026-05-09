@@ -7,7 +7,8 @@ Usage:
     python manage.py list-projects                       # List projects currently in DB
     python manage.py list-engineers [--project-code X]   # List engineers from mapping JSON
     python manage.py run-status <project_code>           # Status Engine: compute + persist
-    python manage.py run-aggregation <project_code>      # Aggregation Engine (stub — Step 6)
+    python manage.py run-aggregation <project_code>      # Aggregation Engine: weekly report (Step 6)
+    python manage.py run-highlights <project_code>       # Highlights Engine: week-over-week (Step 7)
     python manage.py whoami-jira                         # Verify JIRA token
     python manage.py whoami-confluence                   # Verify Confluence token
     python manage.py jira-search <project_key>           # Search recent issues in JIRA
@@ -224,6 +225,66 @@ def run_aggregation(project_code, week_of, regenerate):
         click.echo("  Regeneration?:           no — fresh insert")
     click.echo("")
     click.echo("=== Generated report ===")
+    click.echo(result.content_markdown)
+
+
+@cli.command("run-highlights")
+@click.argument("project_code")
+@click.option("--week-of", default=None,
+              help="Monday of the report week (YYYY-MM-DD). Defaults to current week (IST).")
+def run_highlights(project_code, week_of):
+    """Manually trigger Highlights generation for one project for one week.
+
+    Pipeline (Step 7):
+      1. Look up project in DB
+      2. Load this week's WeeklyReport row (REQUIRED — Step 6 must have run)
+      3. Load last week's WeeklyReport row (OPTIONAL — first-week is OK)
+      4. Strip any existing Highlights from this week (re-run safety)
+      5. Render Prompt 2 (Markdown output, NOT JSON)
+      6. Splice the LLM's output into this week's report
+      7. Persist updated content_markdown + prompt_version_highlights
+
+    Idempotent: re-running for the same (project, week) replaces the existing
+    Highlights section. To produce a meaningful (non first-week) result,
+    Step 6 must have produced WeeklyReport rows for BOTH this week AND last
+    week — typically by running:
+        python manage.py run-aggregation <code> --week-of <last-monday>
+        python manage.py run-aggregation <code>
+    before this command.
+    """
+    from datetime import datetime as _dt
+    from app.engines.highlights import run_highlights as run_highlights_engine
+
+    week_date = None
+    if week_of:
+        try:
+            week_date = _dt.strptime(week_of, "%Y-%m-%d").date()
+        except ValueError as e:
+            click.echo(f"[FAIL] --week-of must be YYYY-MM-DD: {e}", err=True)
+            sys.exit(1)
+
+    result = run_highlights_engine(project_code, week_of=week_date)
+
+    if not result.success:
+        click.echo(f"[FAIL] Highlights failed: {result.error}", err=True)
+        sys.exit(1)
+
+    click.echo("[OK] Highlights succeeded.")
+    click.echo(f"  Week of:                 {result.week_of}")
+    click.echo(f"  Last week of:            "
+               f"{result.last_week_of if result.last_week_of else '(no prior week)'}")
+    click.echo(f"  First week (no compare): {'YES' if result.is_first_week else 'no'}")
+    click.echo(f"  LLM mode:                {result.llm_mode}")
+    click.echo(f"  Duration:                {result.duration_seconds}s")
+    click.echo(
+        f"  Tokens:                  {result.prompt_tokens} prompt + "
+        f"{result.completion_tokens} completion"
+    )
+    click.echo("")
+    click.echo("=== Highlights section produced by LLM ===")
+    click.echo(result.highlights_section)
+    click.echo("")
+    click.echo("=== Updated full report (with Highlights spliced in) ===")
     click.echo(result.content_markdown)
 
 
