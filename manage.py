@@ -160,10 +160,69 @@ def list_engineers_cmd(project_code):
 
 @cli.command("run-aggregation")
 @click.argument("project_code")
-def run_aggregation(project_code):
-    """Manually trigger weekly aggregation for one project."""
-    click.echo(f"[stub] Would run aggregation for {project_code}")
-    # TODO Step 6: wire up to engines.aggregation
+@click.option("--week-of", default=None,
+              help="Monday of the report week (YYYY-MM-DD). Defaults to current week (IST).")
+@click.option("--regenerate", is_flag=True,
+              help="Marker for caller intent. The engine is ALWAYS idempotent — "
+                   "if a row already exists for (project, week) it's updated and "
+                   "regenerated_count is bumped (per FR §B.3.4). The flag is "
+                   "currently informational only.")
+def run_aggregation(project_code, week_of, regenerate):
+    """Manually trigger weekly aggregation for one project for one week.
+
+    Pipeline:
+      1. Look up project in DB
+      2. Resolve engineers on project (from engineer mapping JSON)
+      3. Fetch each engineer's JIRA activity for the week
+      4. Render Prompt 1 with raw inputs grouped by anonymised engineer
+      5. Call LLM (Markdown output, NOT JSON)
+      6. Persist as a WeeklyReport row (insert OR update + bump regenerated_count)
+
+    The Highlights / Things to Watch section is intentionally left empty
+    by Prompt 1's system message — Step 7 (Highlights Engine) fills it
+    in via Prompt 2 in a separate run.
+    """
+    from datetime import datetime as _dt
+    from app.engines.aggregation import run_weekly_aggregation
+
+    week_date = None
+    if week_of:
+        try:
+            week_date = _dt.strptime(week_of, "%Y-%m-%d").date()
+        except ValueError as e:
+            click.echo(f"[FAIL] --week-of must be YYYY-MM-DD: {e}", err=True)
+            sys.exit(1)
+
+    result = run_weekly_aggregation(
+        project_code, week_of=week_date, regenerate=regenerate,
+    )
+
+    if not result.success:
+        click.echo(f"[FAIL] Aggregation failed: {result.error}", err=True)
+        sys.exit(1)
+
+    click.echo("[OK] Aggregation succeeded.")
+    click.echo(f"  Week of:                 {result.week_of}")
+    click.echo(f"  LLM mode:                {result.llm_mode}")
+    click.echo(f"  Duration:                {result.duration_seconds}s")
+    click.echo(
+        f"  Tokens:                  {result.prompt_tokens} prompt + "
+        f"{result.completion_tokens} completion"
+    )
+    click.echo(f"  Engineers in scope:      {result.engineer_count}")
+    click.echo(f"  Activity records:        {result.activity_records}")
+    if result.unmapped_authors_count:
+        click.echo(
+            f"  [WARN] Unmapped authors: {result.unmapped_authors_count} "
+            f"(see system.jsonl for names — update engineer_project_mapping.json)"
+        )
+    if result.is_regeneration:
+        click.echo("  Regeneration?:           YES — existing row updated, regenerated_count bumped")
+    else:
+        click.echo("  Regeneration?:           no — fresh insert")
+    click.echo("")
+    click.echo("=== Generated report ===")
+    click.echo(result.content_markdown)
 
 
 @cli.command("run-status")
