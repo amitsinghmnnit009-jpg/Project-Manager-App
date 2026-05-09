@@ -25,6 +25,29 @@ PROMPT_FILE = "weekly_aggregation_v1"
 PROMPT_VERSION = "WeeklyAggregation/v1"
 
 
+# JIRA frequently embeds NBSP variants (U+00A0 NO-BREAK SPACE, U+202F NARROW
+# NO-BREAK SPACE) in rendered date/time strings — e.g. "04/May/26 11:40 am".
+# When the LLM reproduces those characters in the report, terminals print them
+# as 'NNBSP'/garbage and Markdown renderers may collapse or misalign them. Map
+# any NBSP variant back to a regular ASCII space before the value reaches the
+# prompt so the LLM never sees them in the first place.
+_NBSP_VARIANTS = str.maketrans({
+    " ": " ",   # NO-BREAK SPACE
+    " ": " ",   # NARROW NO-BREAK SPACE
+    " ": " ",   # FIGURE SPACE
+    " ": " ",   # THIN SPACE
+    "​": "",    # ZERO WIDTH SPACE — strip entirely (invisible)
+})
+
+
+def _clean(s) -> str:
+    """Normalise a string before it lands in the prompt: NBSP→space, strip
+    zero-width chars. Returns '' for None / non-strings."""
+    if s is None:
+        return ""
+    return str(s).translate(_NBSP_VARIANTS)
+
+
 # ---------- Template loading + section extraction ------------------------
 
 def load_report_template(per_project_path: Optional[str] = None) -> str:
@@ -132,8 +155,8 @@ def render_raw_inputs_block(activity_by_engineer: dict, anonymise: bool = True) 
         for task_id, recs in by_task.items():
             first = recs[0]
             block_lines.append(
-                f"Task: {task_id} — {first.task_title}"
-                f" (status: {first.task_status})"
+                f"Task: {task_id} — {_clean(first.task_title)}"
+                f" (status: {_clean(first.task_status)})"
             )
 
             comments = [r for r in recs if r.activity_kind == "comment"]
@@ -146,27 +169,27 @@ def render_raw_inputs_block(activity_by_engineer: dict, anonymise: bool = True) 
                 block_lines.append("  Comments added this week:")
                 for c in comments:
                     ts = (c.timestamp or "")[:10]
-                    block_lines.append(f"    [{ts}] {c.detail}")
+                    block_lines.append(f"    [{ts}] {_clean(c.detail)}")
             if worklogs:
                 block_lines.append("  Work-logs added this week:")
                 for w in worklogs:
                     ts = (w.timestamp or "")[:10]
-                    block_lines.append(f"    [{ts}] {w.detail}")
+                    block_lines.append(f"    [{ts}] {_clean(w.detail)}")
             if status_changes:
                 block_lines.append("  Status changes:")
                 for sc in status_changes:
                     ts = (sc.timestamp or "")[:10]
-                    block_lines.append(f"    [{ts}] {sc.detail}")
+                    block_lines.append(f"    [{ts}] {_clean(sc.detail)}")
             if updates:
                 block_lines.append("  Other updates:")
                 for u in updates:
                     ts = (u.timestamp or "")[:10]
-                    block_lines.append(f"    [{ts}] {u.detail}")
+                    block_lines.append(f"    [{ts}] {_clean(u.detail)}")
             if creations:
                 block_lines.append("  Created this week:")
                 for cr in creations:
                     ts = (cr.timestamp or "")[:10]
-                    block_lines.append(f"    [{ts}] {cr.task_title}")
+                    block_lines.append(f"    [{ts}] {_clean(cr.task_title)}")
 
         blocks.append("\n".join(block_lines))
 

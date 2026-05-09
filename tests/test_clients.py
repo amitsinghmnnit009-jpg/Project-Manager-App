@@ -262,6 +262,84 @@ def test_jira_collect_activity_handles_nbsp_in_name():
 
 
 @responses.activate
+def test_jira_collect_activity_filters_assignee_changelog_to_protect_anonymity():
+    """Assignee/Reporter/Watchers changes are person-valued — if they reach
+    the prompt, the LLM faithfully echoes the names (knox_id or display name)
+    into the report, violating FR §B 'no engineer names'. The _NOISY_FIELDS
+    filter strips them at the JIRA-collection stage so they never reach the
+    prompt's RAW INPUTS block.
+
+    This test verifies that an Assignee changelog history item is dropped
+    (not surfaced as an 'updated' ActivityRecord), while a Status change
+    on the same issue still comes through (status_change is essential signal).
+    """
+    from datetime import date, datetime, timedelta
+    from app.clients.jira_client import JiraClient
+
+    issue = {
+        "key": "PROJ-99",
+        "fields": {
+            "summary": "Test task",
+            "status": {"name": "Done"},
+            "issuetype": {"name": "Task"},
+            "assignee": None, "reporter": None,
+            "created": "2026-04-01T10:00:00.000+0530",
+            "updated": "2026-05-08T10:00:00.000+0530",
+        },
+        "changelog": {"histories": [
+            {
+                "created": "2026-05-06T10:00:00.000+0530",
+                "author": {"key": "K1", "name": "alice.eng",
+                           "displayName": "Alice E"},
+                "items": [
+                    # This one MUST be filtered (person-valued)
+                    {"field": "Assignee",
+                     "fromString": "bob.coder", "toString": "alice.eng"},
+                    # This one MUST come through (status is the load-bearing signal)
+                    {"field": "status",
+                     "fromString": "In Progress", "toString": "Done"},
+                ],
+            }
+        ]},
+    }
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/search",
+        json={"issues": [issue], "total": 1},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/issue/PROJ-99/comment",
+        json={"comments": []}, status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/issue/PROJ-99/worklog",
+        json={"worklogs": []}, status=200,
+    )
+
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    engineers = [{"name": "Alice E", "knox_id": "alice.eng"}]
+    week_of = (datetime.now().date() - timedelta(days=datetime.now().weekday()))
+
+    activity = client.collect_engineer_activity("PROJ", week_of, engineers)
+
+    # Alice should have ONE record (the status_change), not TWO (status + assignee)
+    records = activity.by_engineer.get("alice.eng", [])
+    kinds = [r.activity_kind for r in records]
+    assert "status_change" in kinds, f"Status change must come through; got kinds={kinds}"
+    # No 'updated' record — the only non-status item was Assignee, which was filtered
+    for r in records:
+        assert "Assignee" not in r.detail, (
+            f"Assignee changelog leaked into a record: {r.detail!r}"
+        )
+        assert "alice.eng" not in r.detail, (
+            f"Engineer knox_id leaked into a record's detail: {r.detail!r}"
+        )
+
+
+@responses.activate
 def test_jira_search_filters_by_issue_type():
     responses.add(
         responses.GET,

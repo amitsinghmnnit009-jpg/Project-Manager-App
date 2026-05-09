@@ -23,6 +23,16 @@ from app.utils.logging import system_log, sync_log
 
 
 # Changelog fields that create noise without adding meaning. Drop before LLM.
+#
+# 'Assignee', 'Reporter', 'Watchers' are filtered specifically because their
+# old/new values are person identifiers (knox_id / display name). The PGM-level
+# weekly report should describe WORK DONE, not WHO IS ASSIGNED. Status changes
+# (which are NOT person-valued) are captured separately as `status_change`
+# records and remain the load-bearing signal. Without this filter, an
+# 'Assignee: X -> Y' changelog entry would land in the prompt's RAW INPUTS
+# block and the LLM would faithfully echo "assignee updated to <name>" into
+# the report — leaking engineer names despite the prompt's anonymity rule
+# (FR §B "no engineer names").
 _NOISY_FIELDS = {
     "Rank", "rank",
     "RemoteIssueLink", "Link",
@@ -34,6 +44,10 @@ _NOISY_FIELDS = {
     "Parent Link",
     "Flagged",
     "labels", "Labels",
+    # Person-valued fields — strip to enforce the anonymity rule:
+    "Assignee", "assignee",
+    "Reporter", "reporter",
+    "Watchers", "watchers",
 }
 
 
