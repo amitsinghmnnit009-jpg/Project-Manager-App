@@ -10,6 +10,7 @@ Usage:
     python manage.py run-aggregation <project_code>      # Aggregation Engine: weekly report (Step 6)
     python manage.py run-highlights <project_code>       # Highlights Engine: week-over-week (Step 7)
     python manage.py scheduler-status                    # List APScheduler jobs and next run times
+    python manage.py scheduler-runs [--hours N] [--errors-only]   # Recent scheduler events from system.jsonl
     python manage.py whoami-jira                         # Verify JIRA token
     python manage.py whoami-confluence                   # Verify Confluence token
     python manage.py jira-search <project_key>           # Search recent issues in JIRA
@@ -344,6 +345,126 @@ def scheduler_status():
         click.echo(f"  {job.id:30s}  next: {next_str}")
         click.echo(f"    name:   {job.name}")
         click.echo(f"    trigger: {job.trigger}")
+
+
+@cli.command("scheduler-runs")
+@click.option("--hours", default=48, type=int,
+              help="Window of recent scheduler events to show (default: 48h)")
+@click.option("--errors-only", is_flag=True,
+              help="Only show failure/crash events")
+@click.option("--lines", default=200, type=int,
+              help="Max number of events to print (default: 200)")
+def scheduler_runs(hours, errors_only, lines):
+    """Show recent scheduler events from logs/system.jsonl.
+
+    Use this to verify scheduled jobs ACTUALLY FIRED — `scheduler-status`
+    only tells you what's REGISTERED. If the scheduler is running but no
+    job has fired since startup, you'll see only `scheduler_started` here.
+
+    Daily status job fires at the configured hour (default 06:00 IST).
+    Weekly pipeline fires at each project's weekly_cutoff + offset
+    (default Mon 13:05 IST). If you started the server in the middle of
+    a day, no daily/weekly events will show up until the next scheduled
+    fire time.
+    """
+    import json
+    from datetime import datetime as _dt, timedelta, timezone
+    from pathlib import Path
+
+    cfg = get_config()
+    log_dir = Path(cfg.logging.directory)
+    if not log_dir.is_absolute():
+        log_dir = Path(__file__).resolve().parent / log_dir
+    log_path = log_dir / "system.jsonl"
+
+    if not log_path.exists():
+        click.echo(f"[INFO] system.jsonl not found at {log_path}")
+        click.echo("       The server hasn't run yet, OR cwd-relative path didn't resolve.")
+        return
+
+    # Events that scheduler.py writes to system.jsonl
+    SCHEDULER_EVENTS = {
+        "scheduler_started", "scheduler_stopped",
+        "scheduler_already_running", "scheduler_no_jobs",
+        "scheduler_status_skipped", "scheduler_status_start",
+        "scheduler_status_success", "scheduler_status_failed",
+        "scheduler_status_crashed",
+        "scheduler_weekly_start",
+        "scheduler_weekly_agg_success", "scheduler_weekly_agg_failed",
+        "scheduler_weekly_agg_crashed",
+        "scheduler_weekly_hl_failed", "scheduler_weekly_hl_crashed",
+        "scheduler_weekly_success",
+        "scheduler_unknown_cadence", "scheduler_bad_cutoff",
+        "startup_scheduler_failed", "shutdown_scheduler_failed",
+    }
+
+    cutoff = _dt.now(timezone.utc) - timedelta(hours=hours)
+
+    matches = []
+    with open(log_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            event = rec.get("event")
+            if event not in SCHEDULER_EVENTS:
+                continue
+            ts_str = rec.get("ts", "")
+            try:
+                ts = _dt.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts < cutoff:
+                continue
+            if errors_only and ("fail" not in event and "crash" not in event):
+                continue
+            matches.append(rec)
+
+    if not matches:
+        scope = "errors only " if errors_only else ""
+        click.echo(f"[INFO] No scheduler {scope}events in last {hours}h.")
+        click.echo(f"       Log file: {log_path}")
+        if not errors_only:
+            click.echo("       If the server is running but you see nothing here,")
+            click.echo("       jobs haven't fired yet (next fire times in 'scheduler-status').")
+        return
+
+    matches = matches[-lines:]
+    failures = sum(
+        1 for r in matches
+        if "fail" in r.get("event", "") or "crash" in r.get("event", "")
+    )
+    click.echo(f"[OK] {len(matches)} scheduler event(s) in last {hours}h "
+               f"({failures} failure/crash):")
+    click.echo("")
+
+    # Compact one-line-per-event display with the most useful fields
+    INTERESTING_FIELDS = (
+        "job_count", "cadence", "is_regeneration", "engineer_count",
+        "activity_records", "is_first_week",
+        "overall_health", "schedule_status", "completion_pct",
+        "duration_seconds", "changed", "error", "type",
+    )
+    for rec in matches:
+        ts = (rec.get("ts") or "")[:19].replace("T", " ")
+        event = rec.get("event", "?")
+        proj = rec.get("project_code") or rec.get("week_of") or ""
+        details = []
+        for k in INTERESTING_FIELDS:
+            v = rec.get(k)
+            if v is None or v == "":
+                continue
+            v_str = str(v)
+            if len(v_str) > 60:
+                v_str = v_str[:60] + "…"
+            details.append(f"{k}={v_str}")
+        click.echo(f"  {ts}  {event:32s}  {str(proj):14s}  {' '.join(details)}")
 
 
 @cli.command("run-status")
