@@ -12,6 +12,7 @@ import json
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from types import SimpleNamespace
 
 
@@ -21,16 +22,31 @@ from types import SimpleNamespace
 
 @pytest.fixture
 def fresh_db(monkeypatch):
-    """Per-test in-memory SQLite. Swaps app.db._engine and SessionLocal."""
+    """Per-test in-memory SQLite. Swaps app.db._engine and SessionLocal.
+
+    Uses StaticPool so the in-memory database is shared across every
+    connection the test issues. Without StaticPool, SQLAlchemy's default
+    connection-pool semantics on SQLite may give each connection its own
+    private in-memory DB — Base.metadata.create_all writes tables to one
+    connection, then session_scope() queries on a different connection
+    where the tables don't exist. StaticPool maintains a single connection
+    for the engine's lifetime, which is exactly what testing wants.
+
+    autoflush is also enabled here (overriding the production setting of
+    False) so that pending INSERTs are visible to subsequent SELECTs in
+    the SAME session — sync_projects_from_config queries 'all current
+    codes' immediately after adding rows, and we want that count right.
+    """
     import app.db as db_mod
 
     test_engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
         future=True,
     )
     test_session = sessionmaker(
-        bind=test_engine, autoflush=False, autocommit=False, future=True
+        bind=test_engine, autoflush=True, autocommit=False, future=True
     )
 
     monkeypatch.setattr(db_mod, "_engine", test_engine)
@@ -150,10 +166,41 @@ def test_sync_inserts_new_projects(fresh_db, fake_config):
         fake_config.project(code="PROJ_A", name="Project A"),
         fake_config.project(code="PROJ_B", name="Project B", jira_project_key="JIRA_B"),
     ]
-    from app.registry.projects import sync_projects_from_config
 
+    # ---- Diagnostic assertions (each pinpoints a different failure mode) --
+    # 1. Did our list assignment actually take effect on cfg.projects?
+    assert len(fake_config.cfg.projects) == 2, (
+        f"After assignment, cfg.projects has {len(fake_config.cfg.projects)} "
+        f"items: {fake_config.cfg.projects!r}"
+    )
+    codes = [p.code for p in fake_config.cfg.projects]
+    assert codes == ["PROJ_A", "PROJ_B"], f"Codes wrong: {codes!r}"
+
+    # 2. Does get_config() return the same instance that fake_config exposes?
+    #    (If pydantic somehow forks the AppConfig on assignment, sync would
+    #    see a different cfg with stale projects[].)
+    import app.config as config_mod
+    cfg_now = config_mod.get_config()
+    assert cfg_now is fake_config.cfg, (
+        f"get_config() returned id={id(cfg_now)} but fake_config.cfg is "
+        f"id={id(fake_config.cfg)}. Pydantic / lru_cache mismatch."
+    )
+    assert len(cfg_now.projects) == 2, (
+        f"get_config().projects has {len(cfg_now.projects)} items, expected 2. "
+        f"Items: {cfg_now.projects!r}"
+    )
+
+    from app.registry.projects import sync_projects_from_config
     report = sync_projects_from_config()
-    assert report["created_count"] == 2
+
+    # 3. Did sync see the projects?
+    assert report["total_in_config"] == 2, (
+        f"sync saw {report['total_in_config']} projects in config, expected 2. "
+        f"Full report: {report!r}"
+    )
+
+    # ---- Original assertions ---------------------------------------------
+    assert report["created_count"] == 2, f"Expected 2 created, got report: {report!r}"
     assert report["updated_count"] == 0
     assert report["total_in_db_after"] == 2
     assert report["stale_codes"] == []
