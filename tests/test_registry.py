@@ -46,15 +46,28 @@ def fresh_db(monkeypatch):
 
 
 @pytest.fixture
-def fake_config(monkeypatch):
-    """Replace get_config() with a configurable fake. The base shape mirrors
-    AppConfig but uses SimpleNamespace so tests can override fields freely.
+def fake_config():
+    """Use the REAL config object, but allow tests to mutate .projects.
+    Restores .projects on teardown.
 
-    The fake initially has empty projects[] — individual tests append entries.
+    Why mutate instead of replace get_config(): app.utils.logging accesses
+    cfg.logging.directory and cfg.logging.level when building loggers; the
+    registry calls system_log() during sync; if we swap get_config() with a
+    SimpleNamespace that lacks `logging`, we crash before any registry code
+    even runs. Keeping the real cfg object intact and mutating only the
+    fields the test cares about avoids re-deriving the entire AppConfig
+    shape in the fixture.
     """
     import app.config as config_mod
+    real = config_mod.get_config()
+    original_projects = list(real.projects)
 
     def _project_cfg(**overrides):
+        # SimpleNamespace shaped like ProjectConfig — every field
+        # _project_config_to_columns() reads must be present.
+        # Pydantic v2 ProjectConfig would also work but instantiating it
+        # would re-validate on construction; SimpleNamespace just sticks
+        # the values on as attributes (duck typing wins downstream).
         defaults = dict(
             code="TEST",
             name="Test Project",
@@ -78,23 +91,27 @@ def fake_config(monkeypatch):
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
 
-    fake = SimpleNamespace(
-        engineers=SimpleNamespace(mapping_file="<unused>"),
-        projects=[],
-    )
+    yield SimpleNamespace(cfg=real, project=_project_cfg)
 
-    monkeypatch.setattr(config_mod, "get_config", lambda: fake)
-
-    # Return both the fake AND a project-builder helper so tests can
-    # populate projects[] without re-deriving the defaults.
-    return SimpleNamespace(cfg=fake, project=_project_cfg)
+    # Restore the original projects list on teardown so other tests / the
+    # dev DB don't see whatever this test pushed.
+    real.projects = original_projects
 
 
 @pytest.fixture
-def fake_mapping_file(tmp_path, monkeypatch):
-    """Write a temp engineer mapping file and point config at it."""
+def fake_mapping_file(tmp_path):
+    """Write a temp engineer mapping file and point cfg.engineers.mapping_file
+    at it. Restores the original path on teardown.
+
+    Same pattern as fake_config: mutate one field on the real config rather
+    than replacing get_config() wholesale, so logging / database / other
+    sections stay valid throughout the test.
+    """
     import app.config as config_mod
     from app.registry import engineers as engineers_mod
+
+    real = config_mod.get_config()
+    original_path = real.engineers.mapping_file
 
     path = tmp_path / "mapping.json"
 
@@ -115,13 +132,12 @@ def fake_mapping_file(tmp_path, monkeypatch):
         ],
     })
 
-    # Build a minimal fake config with engineers.mapping_file pointing here
-    fake = SimpleNamespace(engineers=SimpleNamespace(mapping_file=str(path)))
-    monkeypatch.setattr(config_mod, "get_config", lambda: fake)
-
-    # Reset cache before AND after to avoid bleeding between tests
+    real.engineers.mapping_file = str(path)
     engineers_mod.load_engineer_mapping.cache_clear()
+
     yield SimpleNamespace(path=path, write=_write)
+
+    real.engineers.mapping_file = original_path
     engineers_mod.load_engineer_mapping.cache_clear()
 
 
@@ -331,17 +347,26 @@ def test_is_known_engineer_handles_empty_input(fake_mapping_file):
     assert is_known_engineer(None) is None  # type: ignore[arg-type]
 
 
-def test_load_engineer_mapping_handles_missing_file(tmp_path, monkeypatch):
+def _swap_mapping_file_path(real_cfg, new_path: str):
+    """Helper: swap real_cfg.engineers.mapping_file. Returns the original
+    so the test can restore it on teardown (used by tests that need a
+    custom path the default fake_mapping_file fixture wouldn't set)."""
+    original = real_cfg.engineers.mapping_file
+    real_cfg.engineers.mapping_file = new_path
+    return original
+
+
+def test_load_engineer_mapping_handles_missing_file(tmp_path):
     """A missing mapping file should produce an empty mapping with a warning,
-    not crash."""
+    not crash. Same fixture pattern as fake_mapping_file: mutate the real
+    cfg.engineers.mapping_file rather than swapping get_config()."""
     import app.config as config_mod
     from app.registry import engineers as engineers_mod
 
-    fake = SimpleNamespace(engineers=SimpleNamespace(
-        mapping_file=str(tmp_path / "does_not_exist.json")
-    ))
-    monkeypatch.setattr(config_mod, "get_config", lambda: fake)
-
+    real = config_mod.get_config()
+    original_path = _swap_mapping_file_path(
+        real, str(tmp_path / "does_not_exist.json")
+    )
     engineers_mod.load_engineer_mapping.cache_clear()
     try:
         m = engineers_mod.load_engineer_mapping()
@@ -349,10 +374,11 @@ def test_load_engineer_mapping_handles_missing_file(tmp_path, monkeypatch):
         assert m.by_knox == {}
         assert any("not found" in w.lower() for w in m.parse_warnings)
     finally:
+        real.engineers.mapping_file = original_path
         engineers_mod.load_engineer_mapping.cache_clear()
 
 
-def test_load_engineer_mapping_handles_malformed_json(tmp_path, monkeypatch):
+def test_load_engineer_mapping_handles_malformed_json(tmp_path):
     """A malformed JSON file should produce an empty mapping with a parse
     error in warnings, not crash the whole app."""
     import app.config as config_mod
@@ -361,19 +387,19 @@ def test_load_engineer_mapping_handles_malformed_json(tmp_path, monkeypatch):
     bad_path = tmp_path / "bad.json"
     bad_path.write_text("{ not valid json", encoding="utf-8")
 
-    fake = SimpleNamespace(engineers=SimpleNamespace(mapping_file=str(bad_path)))
-    monkeypatch.setattr(config_mod, "get_config", lambda: fake)
-
+    real = config_mod.get_config()
+    original_path = _swap_mapping_file_path(real, str(bad_path))
     engineers_mod.load_engineer_mapping.cache_clear()
     try:
         m = engineers_mod.load_engineer_mapping()
         assert m.engineers == []
         assert any("parse error" in w.lower() for w in m.parse_warnings)
     finally:
+        real.engineers.mapping_file = original_path
         engineers_mod.load_engineer_mapping.cache_clear()
 
 
-def test_load_engineer_mapping_skips_underscore_documentation_keys(tmp_path, monkeypatch):
+def test_load_engineer_mapping_skips_underscore_documentation_keys(tmp_path):
     """Mapping files now ship with _README and _help_* keys for self-documentation.
     The loader must ignore them and parse normal entries fine."""
     import app.config as config_mod
@@ -387,9 +413,8 @@ def test_load_engineer_mapping_skips_underscore_documentation_keys(tmp_path, mon
         "assignments": [{"knox_id": "eng.1", "projects": ["P1"]}],
     }), encoding="utf-8")
 
-    fake = SimpleNamespace(engineers=SimpleNamespace(mapping_file=str(path)))
-    monkeypatch.setattr(config_mod, "get_config", lambda: fake)
-
+    real = config_mod.get_config()
+    original_path = _swap_mapping_file_path(real, str(path))
     engineers_mod.load_engineer_mapping.cache_clear()
     try:
         m = engineers_mod.load_engineer_mapping()
@@ -397,4 +422,5 @@ def test_load_engineer_mapping_skips_underscore_documentation_keys(tmp_path, mon
         assert m.engineers[0].knox_id == "eng.1"
         assert m.parse_warnings == []
     finally:
+        real.engineers.mapping_file = original_path
         engineers_mod.load_engineer_mapping.cache_clear()
