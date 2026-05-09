@@ -9,6 +9,8 @@ Usage:
     python manage.py run-status <project_code>           # Status Engine: compute + persist
     python manage.py run-aggregation <project_code>      # Aggregation Engine: weekly report (Step 6)
     python manage.py run-highlights <project_code>       # Highlights Engine: week-over-week (Step 7)
+    python manage.py run-reminders <project_code> [--type pre|post]   # Reminders (Step 10)
+    python manage.py show-last-reminders [--hours N]     # Recent mock-sent emails
     python manage.py scheduler-status                    # List APScheduler jobs and next run times
     python manage.py scheduler-runs [--hours N] [--errors-only]   # Recent scheduler events from system.jsonl
     python manage.py whoami-jira                         # Verify JIRA token
@@ -290,6 +292,125 @@ def run_highlights(project_code, week_of):
     click.echo(result.content_markdown)
 
 
+@cli.command("run-reminders")
+@click.argument("project_code")
+@click.option("--type", "type_",
+              type=click.Choice(["pre", "post"]), default="post",
+              help="pre = proactive heads-up to ALL engineers; "
+                   "post = late notification only to engineers missing JIRA updates (default).")
+@click.option("--week-of", default=None,
+              help="Monday of the report week (YYYY-MM-DD). Defaults to current week (IST).")
+def run_reminders(project_code, type_, week_of):
+    """Manually trigger reminder emails for one project for one week.
+
+    Same code path the scheduler invokes (Step 10). In Phase 1 emails are
+    MOCK-SENT — written to logs/sent_emails.jsonl + ReminderLog DB table,
+    no real SMTP traffic. Use 'show-last-reminders' to inspect recent sends.
+
+    --type pre   : send to ALL engineers assigned (no JIRA query)
+    --type post  : query JIRA, send only to engineers with no recorded
+                   activity (comments / work-logs / status changes) for
+                   the report week
+    """
+    from datetime import datetime as _dt
+    from app.notifications import (
+        run_pre_cutoff_reminders, run_post_cutoff_reminders,
+    )
+
+    week_date = None
+    if week_of:
+        try:
+            week_date = _dt.strptime(week_of, "%Y-%m-%d").date()
+        except ValueError as e:
+            click.echo(f"[FAIL] --week-of must be YYYY-MM-DD: {e}", err=True)
+            sys.exit(1)
+
+    runner = run_pre_cutoff_reminders if type_ == "pre" else run_post_cutoff_reminders
+    res = runner(project_code, week_of=week_date)
+
+    if not res.success:
+        click.echo(f"[FAIL] Reminders failed: {res.error}", err=True)
+        sys.exit(1)
+
+    click.echo(f"[OK] {type_}-cutoff reminders dispatched.")
+    click.echo(f"  Project:               {res.project_code}")
+    click.echo(f"  Week of:               {res.week_of}")
+    click.echo(f"  Engineers targeted:    {res.engineers_targeted}")
+    click.echo(f"  Sent OK:               {len(res.sent) - len(res.failed_knox_ids)}")
+    click.echo(f"  Failed:                {len(res.failed_knox_ids)}")
+    if res.failed_knox_ids:
+        for k in res.failed_knox_ids:
+            click.echo(f"    ! {k}")
+    if res.sent:
+        click.echo("")
+        click.echo(f"=== Recipients ({len(res.sent)}) ===")
+        for sent in res.sent:
+            click.echo(f"  {sent.knox_id:25s}  {sent.name:25s}  status={sent.status}")
+
+
+@cli.command("show-last-reminders")
+@click.option("--hours", default=72, type=int,
+              help="Window of recent mock-sent reminders to show (default: 72h)")
+@click.option("--lines", default=200, type=int, help="Max number of entries to print")
+def show_last_reminders(hours, lines):
+    """Print recent mock-sent reminder emails from logs/sent_emails.jsonl.
+
+    Shows what would have been sent to whom — useful for verifying Step 10
+    in mock mode without needing real SMTP delivery to inspect.
+    """
+    import json
+    from datetime import datetime as _dt, timedelta, timezone
+    from pathlib import Path
+
+    cfg = get_config()
+    log_path = Path(cfg.email.mock_log_path)
+    if not log_path.is_absolute():
+        log_path = Path(__file__).resolve().parent / log_path
+
+    if not log_path.exists():
+        click.echo(f"[INFO] No mock email log found at {log_path}")
+        click.echo("       No reminders have been sent yet (or path doesn't resolve).")
+        return
+
+    cutoff = _dt.now(timezone.utc) - timedelta(hours=hours)
+
+    matches = []
+    with open(log_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts_str = rec.get("ts", "")
+            try:
+                ts = _dt.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts < cutoff:
+                continue
+            matches.append(rec)
+
+    if not matches:
+        click.echo(f"[INFO] No mock-sent reminders in the last {hours}h.")
+        return
+
+    matches = matches[-lines:]
+    click.echo(f"[OK] {len(matches)} mock-sent reminder(s) in last {hours}h:")
+    click.echo("")
+    for rec in matches:
+        ts = (rec.get("ts") or "")[:19].replace("T", " ")
+        click.echo(f"  {ts}  type={rec.get('type', '?'):12s}  "
+                   f"to={rec.get('to_knox_id', '?'):20s}  "
+                   f"project={rec.get('project_code', '?'):10s}  "
+                   f"week_of={rec.get('week_of', '?')}  "
+                   f"status={rec.get('status', '?')}")
+
+
 @cli.command("scheduler-status")
 def scheduler_status():
     """Build a scheduler from current config + DB and print all jobs that
@@ -394,6 +515,10 @@ def scheduler_runs(hours, errors_only, lines):
         "scheduler_weekly_agg_crashed",
         "scheduler_weekly_hl_failed", "scheduler_weekly_hl_crashed",
         "scheduler_weekly_success",
+        "scheduler_reminders_pre_start", "scheduler_reminders_pre_success",
+        "scheduler_reminders_pre_failed", "scheduler_reminders_pre_crashed",
+        "scheduler_reminders_post_start", "scheduler_reminders_post_success",
+        "scheduler_reminders_post_failed", "scheduler_reminders_post_crashed",
         "scheduler_unknown_cadence", "scheduler_bad_cutoff",
         "startup_scheduler_failed", "shutdown_scheduler_failed",
     }

@@ -90,7 +90,7 @@ Project-Manager-App/
 │   ├── test_status_prompt.py            # Standalone Prompt 3 end-to-end (Step 4)
 │   └── show_last_prompt3_result.py      # Print rationale + milestones from last prompt3 run
 │
-└── tests/                  # pytest tests (~153 total)
+└── tests/                  # pytest tests (~190 total)
     ├── conftest.py
     ├── test_smoke.py                       # 5
     ├── test_clients.py                     # 32 — JIRA + Confluence + HTTP session
@@ -101,7 +101,8 @@ Project-Manager-App/
     ├── test_highlights_engine.py           # 8
     ├── test_highlights_prompt.py           # 16 — splice, strip, regex, render
     ├── test_status_engine.py               # 11
-    └── test_scheduler.py                   # 19 — job registration + lifecycle + safe wrappers
+    ├── test_scheduler.py                   # 27 — job registration (incl. reminders) + lifecycle + safe wrappers
+    └── test_notifications.py               # 12 — send + pre/post orchestration + mock JSONL
 ```
 
 ---
@@ -181,12 +182,14 @@ Run `python manage.py --help` for the full list. Grouped by purpose:
 | `llm-ping [--prompt T] [--json-output]` | One short completion. |
 | `llm-embed <text>` | One embedding. |
 
-### Engines (manual triggers — same code path the scheduler uses)
+### Engines + Notifications (manual triggers — same code path the scheduler uses)
 | Command | Purpose |
 |---|---|
 | `run-status <code>` | Status Engine: Confluence + JIRA + past reports → Prompt 3 → DB. |
 | `run-aggregation <code> [--week-of YYYY-MM-DD] [--regenerate]` | Aggregation Engine: JIRA per-engineer activity → Prompt 1 → WeeklyReport. |
 | `run-highlights <code> [--week-of YYYY-MM-DD]` | Highlights Engine: this+last week reports → Prompt 2 → splice into Highlights. |
+| `run-reminders <code> [--type pre\|post] [--week-of YYYY-MM-DD]` | Reminder dispatch (mock-SMTP): `pre` to ALL engineers; `post` only to engineers missing JIRA activity. |
+| `show-last-reminders [--hours N]` | Print recent mock-sent reminder emails from `logs/sent_emails.jsonl`. |
 
 ### Scheduler
 | Command | Purpose |
@@ -206,10 +209,12 @@ Run `python manage.py --help` for the full list. Grouped by purpose:
 
 **APScheduler runs inside the FastAPI process** — it's started by `python manage.py serve` (lifespan startup) and stopped on Ctrl-C / shutdown. There is no separate cron/daemon to manage.
 
-For each project in the DB, two jobs are registered:
+For each project in the DB, **four jobs** are registered:
 
 1. **Status compute** — daily at `cfg.scheduler.daily_status_hour` (default **06:00 IST**). Or hourly. Or not at all (`recompute_cadence = "manual"` per-project).
 2. **Weekly pipeline** — once per week at the project's `weekly_cutoff` + `weekly_aggregation_offset_minutes` (default **Mon 13:05 IST**). Runs Aggregation Engine first; on success runs Highlights Engine.
+3. **Pre-cutoff reminder** — once per week at `weekly_cutoff − cfg.reminders.hours_before_cutoff` (default 24h, so **Sun 13:00 IST**). Sends a heads-up email to ALL engineers assigned to the project.
+4. **Post-cutoff reminder** — once per week at `weekly_cutoff + cfg.reminders.hours_after_cutoff` (default 4h, so **Mon 17:00 IST**). Queries JIRA, sends a late-notification only to engineers who recorded no activity for the week.
 
 Both job bodies wrap engine calls in try/except — engine failures get logged but never kill the scheduler thread. Misfires within 24h (configurable) still run when the process comes back up.
 
@@ -231,6 +236,8 @@ Sample output:
   Weekly aggregation offset: +5 min after cutoff
   Misfire grace:           86400s
 
+  reminder-post:MAICTJ             next: 2026-05-11 17:00 IST
+  reminder-pre:MAICTJ              next: 2026-05-10 13:00 IST
   status:MAICTJ                    next: 2026-05-11 06:00 IST
   weekly:MAICTJ                    next: 2026-05-11 13:05 IST
 ```
@@ -250,9 +257,12 @@ Each event is one line with the most informative fields: `overall_health`, `sche
 The CLI engine commands are the same code path the scheduler invokes:
 
 ```bash
-python manage.py run-status MAICTJ        # same as the daily status job
-python manage.py run-aggregation MAICTJ   # same as the weekly aggregation half
-python manage.py run-highlights MAICTJ    # same as the weekly highlights half
+python manage.py run-status MAICTJ                        # same as the daily status job
+python manage.py run-aggregation MAICTJ                   # same as the weekly aggregation half
+python manage.py run-highlights MAICTJ                    # same as the weekly highlights half
+python manage.py run-reminders MAICTJ --type pre          # same as the pre-cutoff reminder job
+python manage.py run-reminders MAICTJ --type post         # same as the post-cutoff reminder job
+python manage.py show-last-reminders                      # see what would have been emailed
 ```
 
 ---
@@ -267,6 +277,8 @@ All structured JSONL under `logs/`. Three categories:
 | `logs/ai_compute.jsonl` + `AIComputeLog` DB table | ✅ Always | (DB query) — compact LLM audit trail (success/failure, mode, duration, 200-char response excerpt, prompt version) |
 | `logs/llm_prompts.jsonl` | Gated by `config.logging.log_full_llm_prompts` (default `true`) | `show-last-llm-call` — FULL system + user prompts + raw response per LLM call |
 | `logs/external_calls.jsonl` | Gated by `config.logging.log_full_external_calls` (default `true`) | `show-last-external-calls` — FULL JIRA/Confluence call (path, JQL/params, status, duration, result_summary) |
+| `logs/sent_emails.jsonl` + `ReminderLog` DB table | ✅ Always (mock mode) | `show-last-reminders` — every mock-sent reminder email (recipient, subject, body, type=pre/post_cutoff) |
+| `logs/reminder.jsonl` | ✅ Always | (any text editor) — compact one-line per reminder send (knox_id, project, type, status) |
 
 Both gated logs default ON during stabilisation. Once Phase 1 is stable, flip to `false` in `config.json` to save disk; the always-on layers continue providing operational telemetry.
 
@@ -275,7 +287,7 @@ Both gated logs default ON during stabilisation. Once Phase 1 is stable, flip to
 ## Test
 
 ```bash
-pytest -v                          # all ~153 tests
+pytest -v                          # all ~190 tests
 pytest tests/test_smoke.py -v      # smoke check only
 pytest tests/test_scheduler.py -v  # one suite
 pytest -k highlights -v            # filter by keyword
@@ -296,6 +308,6 @@ pytest -k highlights -v            # filter by keyword
 | 7 | Highlights Engine (Prompt 2) | ✅ — `run_highlights()` + week-over-week comparison + splice into WeeklyReport's Highlights section; ~25 tests with mocked LLM |
 | 8 | Status Engine (Prompt 3 wrapped) | ✅ — `run_status_compute()` + persistence; 11 tests with mocked LLM/JIRA/Confluence |
 | 9 | Scheduler | ✅ — APScheduler in FastAPI lifespan; per-project daily status job + weekly aggregation→highlights pipeline (cutoff + offset); idempotent start/stop; misfire grace; scheduler-status CLI; ~20 tests |
-| 10 | Notifications (mocked SMTP) | ⬜ |
+| 10 | Notifications (mocked SMTP) | ✅ — `send_engineer_reminder()` writes to `logs/sent_emails.jsonl` + `ReminderLog` DB; orchestrators `run_pre_cutoff_reminders()` (all engineers) + `run_post_cutoff_reminders()` (only those missing JIRA activity); scheduler fires both per project per week (cutoff ± hours); `run-reminders` + `show-last-reminders` CLIs; ~25 tests |
 | 11 | API routes | ⬜ |
 | 12 | End-to-end test on one real project | ⬜ |

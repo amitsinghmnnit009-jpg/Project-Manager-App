@@ -1,7 +1,7 @@
-"""APScheduler — daily status recompute + weekly pipeline triggers (Step 9).
+"""APScheduler — daily status + weekly pipeline + reminders (Step 9 + Step 10).
 
 Phase 1 design: ONE BackgroundScheduler running inside the FastAPI process.
-For each active project (read from the DB at startup), two jobs are
+For each active project (read from the DB at startup), FOUR jobs are
 registered:
 
 1. **Status recompute** — daily by default at `cfg.scheduler.daily_status_hour`
@@ -18,8 +18,16 @@ registered:
      - On any failure or crash: log + continue. The next week's run will
        try again from scratch.
 
-Reminders (Step 10) are NOT scheduled here yet — that's Step 10's job once
-notifications are implemented.
+3. **Pre-cutoff reminder** (Step 10) — once per week, at the project's
+   `weekly_cutoff` MINUS `cfg.reminders.hours_before_cutoff`. Sends a
+   proactive heads-up email (mocked in Phase 1) to ALL engineers assigned
+   to the project. No JIRA query. Day-of-week wraps correctly when the
+   subtraction crosses midnight or week boundary.
+
+4. **Post-cutoff reminder** (Step 10) — once per week, at the project's
+   `weekly_cutoff` PLUS `cfg.reminders.hours_after_cutoff`. Queries JIRA
+   for the week's activity, identifies engineers who haven't recorded any
+   comments/work-logs/status-changes, and emails ONLY them.
 
 Memory job store (default): jobs are recreated from the DB at every restart
 via `_build_scheduler()`. Misfires within `misfire_grace_seconds` (default
@@ -125,6 +133,7 @@ def _build_scheduler(cfg) -> BackgroundScheduler:
     for project in projects:
         _schedule_status_for_project(sched, project, cfg, tz)
         _schedule_weekly_for_project(sched, project, cfg, tz)
+        _schedule_reminders_for_project(sched, project, cfg, tz)
 
     return sched
 
@@ -220,6 +229,76 @@ def _schedule_weekly_for_project(sched, project, cfg, tz) -> None:
         replace_existing=True,
         misfire_grace_time=cfg.scheduler.misfire_grace_seconds,
         max_instances=1,   # serialise re-fires; weekly pipeline is heavy
+    )
+
+
+# ---------- Reminder jobs (Step 10) ------------------------------------
+
+def _split_week_minute(week_min: int) -> tuple[int, int, int]:
+    """Convert a 'minute-of-week' (0..7*24*60-1) into (weekday, hour, minute).
+
+    weekday is Mon=0..Sun=6 (Python's weekday() convention, also what
+    parse_cutoff returns and what _DAY_NAMES is keyed on).
+    """
+    day = week_min // (24 * 60)
+    hour = (week_min % (24 * 60)) // 60
+    minute = week_min % 60
+    return day, hour, minute
+
+
+def _schedule_reminders_for_project(sched, project, cfg, tz) -> None:
+    """Add the pre-cutoff and post-cutoff reminder jobs for one project.
+
+    Pre-cutoff fires at `weekly_cutoff − cfg.reminders.hours_before_cutoff`,
+    post-cutoff at `weekly_cutoff + cfg.reminders.hours_after_cutoff`.
+    Both wrap correctly across midnight and week boundaries via modulo
+    arithmetic on minute-of-week.
+    """
+    code = project["code"]
+    cutoff_str = project.get("weekly_cutoff") or "Mon 13:00"
+    try:
+        weekday, t = parse_cutoff(cutoff_str)
+    except ValueError:
+        # Already logged by _schedule_weekly_for_project — don't double-log.
+        return
+
+    minutes_per_week = 7 * 24 * 60
+    week_min = weekday * 24 * 60 + t.hour * 60 + t.minute
+
+    pre_offset = cfg.reminders.hours_before_cutoff * 60
+    post_offset = cfg.reminders.hours_after_cutoff * 60
+
+    pre_min = (week_min - pre_offset) % minutes_per_week
+    post_min = (week_min + post_offset) % minutes_per_week
+
+    pre_day, pre_hour, pre_minute = _split_week_minute(pre_min)
+    post_day, post_hour, post_minute = _split_week_minute(post_min)
+
+    sched.add_job(
+        _run_pre_cutoff_reminder_safe,
+        trigger=CronTrigger(
+            day_of_week=_DAY_NAMES[pre_day],
+            hour=pre_hour, minute=pre_minute, timezone=tz,
+        ),
+        args=[code],
+        id=f"reminder-pre:{code}",
+        name=f"Pre-cutoff reminders for {code}",
+        replace_existing=True,
+        misfire_grace_time=cfg.scheduler.misfire_grace_seconds,
+        max_instances=1,
+    )
+    sched.add_job(
+        _run_post_cutoff_reminder_safe,
+        trigger=CronTrigger(
+            day_of_week=_DAY_NAMES[post_day],
+            hour=post_hour, minute=post_minute, timezone=tz,
+        ),
+        args=[code],
+        id=f"reminder-post:{code}",
+        name=f"Post-cutoff reminders for {code}",
+        replace_existing=True,
+        misfire_grace_time=cfg.scheduler.misfire_grace_seconds,
+        max_instances=1,
     )
 
 
@@ -348,3 +427,82 @@ def _run_weekly_pipeline_safe(project_code: str) -> None:
                "is_first_week": hl_res.is_first_week,
                "duration_seconds": hl_res.duration_seconds},
     )
+
+
+def _run_pre_cutoff_reminder_safe(project_code: str) -> None:
+    """Scheduled wrapper around notifications.run_pre_cutoff_reminders.
+
+    Same try/except discipline as the other safe wrappers — engine-returned
+    failure is logged; uncaught exceptions are caught so they don't kill
+    the APScheduler thread.
+    """
+    log = system_log()
+    log.info(
+        "scheduler: pre-cutoff reminders starting",
+        extra={"event": "scheduler_reminders_pre_start",
+               "project_code": project_code},
+    )
+    try:
+        from app.notifications import run_pre_cutoff_reminders
+        res = run_pre_cutoff_reminders(project_code)
+        if res.success:
+            log.info(
+                "scheduler: pre-cutoff reminders complete",
+                extra={"event": "scheduler_reminders_pre_success",
+                       "project_code": project_code,
+                       "engineers_targeted": res.engineers_targeted,
+                       "sent_count": len(res.sent),
+                       "failed_count": len(res.failed_knox_ids),
+                       "week_of": str(res.week_of)},
+            )
+        else:
+            log.error(
+                "scheduler: pre-cutoff reminders returned failure",
+                extra={"event": "scheduler_reminders_pre_failed",
+                       "project_code": project_code,
+                       "error": res.error},
+            )
+    except Exception as e:
+        log.error(
+            "scheduler: pre-cutoff reminders crashed",
+            extra={"event": "scheduler_reminders_pre_crashed",
+                   "project_code": project_code,
+                   "error": str(e), "type": type(e).__name__},
+        )
+
+
+def _run_post_cutoff_reminder_safe(project_code: str) -> None:
+    """Scheduled wrapper around notifications.run_post_cutoff_reminders."""
+    log = system_log()
+    log.info(
+        "scheduler: post-cutoff reminders starting",
+        extra={"event": "scheduler_reminders_post_start",
+               "project_code": project_code},
+    )
+    try:
+        from app.notifications import run_post_cutoff_reminders
+        res = run_post_cutoff_reminders(project_code)
+        if res.success:
+            log.info(
+                "scheduler: post-cutoff reminders complete",
+                extra={"event": "scheduler_reminders_post_success",
+                       "project_code": project_code,
+                       "engineers_targeted": res.engineers_targeted,
+                       "sent_count": len(res.sent),
+                       "failed_count": len(res.failed_knox_ids),
+                       "week_of": str(res.week_of)},
+            )
+        else:
+            log.error(
+                "scheduler: post-cutoff reminders returned failure",
+                extra={"event": "scheduler_reminders_post_failed",
+                       "project_code": project_code,
+                       "error": res.error},
+            )
+    except Exception as e:
+        log.error(
+            "scheduler: post-cutoff reminders crashed",
+            extra={"event": "scheduler_reminders_post_crashed",
+                   "project_code": project_code,
+                   "error": str(e), "type": type(e).__name__},
+        )

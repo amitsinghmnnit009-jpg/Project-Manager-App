@@ -64,12 +64,18 @@ def test_build_scheduler_no_projects(monkeypatch):
     assert sched.get_jobs() == []
 
 
-def test_build_scheduler_default_cadence_creates_status_and_weekly(monkeypatch):
+def test_build_scheduler_default_cadence_creates_all_four_jobs(monkeypatch):
+    """Per project: status + weekly + reminder-pre + reminder-post."""
     _stub_list_projects(monkeypatch, [_make_project(code="ALPHA")])
     from app.scheduler import _build_scheduler
     sched = _build_scheduler(_real_cfg())
     job_ids = sorted(j.id for j in sched.get_jobs())
-    assert job_ids == ["status:ALPHA", "weekly:ALPHA"]
+    assert job_ids == [
+        "reminder-post:ALPHA",
+        "reminder-pre:ALPHA",
+        "status:ALPHA",
+        "weekly:ALPHA",
+    ]
 
 
 def test_build_scheduler_multiple_projects(monkeypatch):
@@ -81,10 +87,13 @@ def test_build_scheduler_multiple_projects(monkeypatch):
     from app.scheduler import _build_scheduler
     sched = _build_scheduler(_real_cfg())
     job_ids = sorted(j.id for j in sched.get_jobs())
-    assert job_ids == [
-        "status:A", "status:B", "status:C",
-        "weekly:A", "weekly:B", "weekly:C",
-    ]
+    # 4 jobs × 3 projects = 12
+    assert len(job_ids) == 12
+    for code in ("A", "B", "C"):
+        assert f"status:{code}" in job_ids
+        assert f"weekly:{code}" in job_ids
+        assert f"reminder-pre:{code}" in job_ids
+        assert f"reminder-post:{code}" in job_ids
 
 
 def test_status_job_skipped_when_per_project_cadence_manual(monkeypatch):
@@ -95,7 +104,9 @@ def test_status_job_skipped_when_per_project_cadence_manual(monkeypatch):
     sched = _build_scheduler(_real_cfg())
     job_ids = [j.id for j in sched.get_jobs()]
     assert "status:ALPHA" not in job_ids
-    assert "weekly:ALPHA" in job_ids   # weekly still scheduled
+    assert "weekly:ALPHA" in job_ids       # weekly still scheduled
+    assert "reminder-pre:ALPHA" in job_ids   # reminders unrelated to status cadence
+    assert "reminder-post:ALPHA" in job_ids
 
 
 def test_status_job_hourly_cadence_uses_top_of_hour(monkeypatch):
@@ -384,3 +395,122 @@ def test_weekly_pipeline_continues_when_highlights_returns_failure(monkeypatch):
     )
     from app.scheduler import _run_weekly_pipeline_safe
     _run_weekly_pipeline_safe("ALPHA")  # must not raise
+
+
+# ------------------------------------------------------------------------
+# Reminder job triggers — offset arithmetic across day/week boundaries
+# ------------------------------------------------------------------------
+
+def test_reminder_pre_default_offset_24h_before_mon_cutoff(monkeypatch):
+    """Default config: cutoff Mon 13:00 minus 24h → Sun 13:00."""
+    _stub_list_projects(monkeypatch, [_make_project(code="ALPHA", weekly_cutoff="Mon 13:00")])
+    from app.scheduler import _build_scheduler
+    sched = _build_scheduler(_real_cfg())
+    pre_job = sched.get_job("reminder-pre:ALPHA")
+    assert pre_job is not None
+    trig_str = str(pre_job.trigger)
+    assert "day_of_week='sun'" in trig_str
+    assert "hour='13'" in trig_str
+    assert "minute='0'" in trig_str
+
+
+def test_reminder_post_default_offset_4h_after_mon_cutoff(monkeypatch):
+    """Default config: cutoff Mon 13:00 plus 4h → Mon 17:00."""
+    _stub_list_projects(monkeypatch, [_make_project(code="ALPHA", weekly_cutoff="Mon 13:00")])
+    from app.scheduler import _build_scheduler
+    sched = _build_scheduler(_real_cfg())
+    post_job = sched.get_job("reminder-post:ALPHA")
+    assert post_job is not None
+    trig_str = str(post_job.trigger)
+    assert "day_of_week='mon'" in trig_str
+    assert "hour='17'" in trig_str
+    assert "minute='0'" in trig_str
+
+
+def test_reminder_post_wraps_across_midnight(monkeypatch):
+    """Cutoff Mon 22:00 plus 4h → Tue 02:00."""
+    _stub_list_projects(monkeypatch, [_make_project(code="ALPHA", weekly_cutoff="Mon 22:00")])
+    from app.scheduler import _build_scheduler
+    sched = _build_scheduler(_real_cfg())
+    post_job = sched.get_job("reminder-post:ALPHA")
+    trig_str = str(post_job.trigger)
+    assert "day_of_week='tue'" in trig_str
+    assert "hour='2'" in trig_str
+    assert "minute='0'" in trig_str
+
+
+def test_reminder_pre_wraps_across_week_boundary(monkeypatch):
+    """Cutoff Mon 02:00 minus 24h → Sun 02:00."""
+    _stub_list_projects(monkeypatch, [_make_project(code="ALPHA", weekly_cutoff="Mon 02:00")])
+    from app.scheduler import _build_scheduler
+    sched = _build_scheduler(_real_cfg())
+    pre_job = sched.get_job("reminder-pre:ALPHA")
+    trig_str = str(pre_job.trigger)
+    assert "day_of_week='sun'" in trig_str
+    assert "hour='2'" in trig_str
+
+
+def test_reminders_skipped_for_invalid_cutoff(monkeypatch):
+    """Bad weekly_cutoff → both reminder jobs skipped (status still added)."""
+    _stub_list_projects(monkeypatch, [_make_project(code="ALPHA", weekly_cutoff="garbage")])
+    from app.scheduler import _build_scheduler
+    sched = _build_scheduler(_real_cfg())
+    job_ids = [j.id for j in sched.get_jobs()]
+    assert "status:ALPHA" in job_ids
+    assert "reminder-pre:ALPHA" not in job_ids
+    assert "reminder-post:ALPHA" not in job_ids
+
+
+def test_split_week_minute_basic():
+    """Smoke-test the helper used by reminder scheduling."""
+    from app.scheduler import _split_week_minute
+    minutes_per_day = 24 * 60
+    # Mon 13:00 = day 0, hour 13, minute 0
+    assert _split_week_minute(13 * 60) == (0, 13, 0)
+    # Tue 02:00 = day 1, hour 2, minute 0
+    assert _split_week_minute(minutes_per_day + 2 * 60) == (1, 2, 0)
+    # Sun 23:59 = day 6, hour 23, minute 59
+    assert _split_week_minute(6 * minutes_per_day + 23 * 60 + 59) == (6, 23, 59)
+
+
+# ------------------------------------------------------------------------
+# Safe wrappers for reminder jobs
+# ------------------------------------------------------------------------
+
+def test_run_pre_cutoff_reminder_safe_calls_engine(monkeypatch):
+    captured = {}
+    def fake(code, week_of=None):
+        captured["called_with"] = code
+        return SimpleNamespace(
+            success=True, project_code=code, week_of=None, type="pre_cutoff",
+            engineers_targeted=3, sent=[1, 2, 3], failed_knox_ids=[], error="",
+        )
+    import app.notifications as notif_mod
+    monkeypatch.setattr(notif_mod, "run_pre_cutoff_reminders", fake)
+
+    from app.scheduler import _run_pre_cutoff_reminder_safe
+    _run_pre_cutoff_reminder_safe("ALPHA")
+    assert captured["called_with"] == "ALPHA"
+
+
+def test_run_post_cutoff_reminder_safe_handles_failure(monkeypatch):
+    import app.notifications as notif_mod
+    monkeypatch.setattr(
+        notif_mod, "run_post_cutoff_reminders",
+        lambda code, week_of=None: SimpleNamespace(
+            success=False, error="jira down",
+            project_code=code, week_of=None, type="post_cutoff",
+            engineers_targeted=0, sent=[], failed_knox_ids=[],
+        ),
+    )
+    from app.scheduler import _run_post_cutoff_reminder_safe
+    _run_post_cutoff_reminder_safe("ALPHA")  # must not raise
+
+
+def test_run_post_cutoff_reminder_safe_swallows_unexpected_exceptions(monkeypatch):
+    import app.notifications as notif_mod
+    def boom(code, week_of=None):
+        raise RuntimeError("oops")
+    monkeypatch.setattr(notif_mod, "run_post_cutoff_reminders", boom)
+    from app.scheduler import _run_post_cutoff_reminder_safe
+    _run_post_cutoff_reminder_safe("ALPHA")  # must not raise
