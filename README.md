@@ -88,7 +88,8 @@ Project-Manager-App/
 │
 ├── scripts/                # One-off utilities
 │   ├── test_status_prompt.py            # Standalone Prompt 3 end-to-end (Step 4)
-│   └── show_last_prompt3_result.py      # Print rationale + milestones from last prompt3 run
+│   ├── show_last_prompt3_result.py      # Print rationale + milestones from last prompt3 run
+│   └── e2e_smoke.py                     # Full-pipeline OK/FAIL runbook (Step 12)
 │
 └── tests/                  # pytest tests (~190 total)
     ├── conftest.py
@@ -103,7 +104,8 @@ Project-Manager-App/
     ├── test_status_engine.py               # 11
     ├── test_scheduler.py                   # 27 — job registration (incl. reminders) + lifecycle + safe wrappers
     ├── test_notifications.py               # 12 — send + pre/post orchestration + mock JSONL
-    └── test_api.py                         # 25 — public REST API + admin endpoints (FastAPI TestClient)
+    ├── test_api.py                         # 25 — public REST API + admin endpoints (FastAPI TestClient)
+    └── test_e2e.py                         #  4 — end-to-end pipeline integration (Step 12)
 ```
 
 ---
@@ -340,10 +342,59 @@ Both gated logs default ON during stabilisation. Once Phase 1 is stable, flip to
 
 ---
 
+## End-to-end verification (Step 12)
+
+Two layers — automated (CI) and manual (against your real environment):
+
+### 1. Automated integration test (no external systems needed)
+
+```bash
+pytest tests/test_e2e.py -v
+```
+
+Wires the full pipeline (Aggregation → Highlights → Status → Reminders → API)
+with mocked LLM/JIRA/Confluence and a real in-memory DB. Proves every
+engine + the API surface fit together.
+
+### 2. Manual smoke against your real environment
+
+```bash
+# Run the 10-step pipeline against ONE real project; prints OK/FAIL with timing.
+python scripts/e2e_smoke.py --project-code MAICTJ
+python scripts/e2e_smoke.py --project-code MAICTJ --week-of 2026-05-04
+
+# Skip the prior-week aggregation if you want to test the first-week flow
+python scripts/e2e_smoke.py --project-code MAICTJ --skip-prior-week
+
+# Skip reminder dispatch (e.g. to avoid filling the mock email log)
+python scripts/e2e_smoke.py --project-code MAICTJ --skip-reminders
+```
+
+The script exercises (in order): JIRA whoami, Confluence whoami, LLM
+ping, registry sync, engineer-mapping resolution, prior-week
+aggregation, current-week aggregation, highlights, status compute,
+pre-cutoff reminders, post-cutoff reminders. Exit code 0 if every
+step passes, 1 otherwise.
+
+### 3. Verify the REST API end-to-end
+
+After `e2e_smoke.py` passes:
+
+```bash
+python manage.py serve            # in one terminal
+curl http://127.0.0.1:8000/api/projects/MAICTJ/status
+curl http://127.0.0.1:8000/api/projects/MAICTJ/reports/latest
+curl http://127.0.0.1:8000/admin/scheduler/jobs
+```
+
+Or open the interactive API explorer at `http://127.0.0.1:8000/docs`.
+
+---
+
 ## Test
 
 ```bash
-pytest -v                          # all ~215 tests
+pytest -v                          # all ~220 tests
 pytest tests/test_smoke.py -v      # smoke check only
 pytest tests/test_scheduler.py -v  # one suite
 pytest -k highlights -v            # filter by keyword
@@ -366,4 +417,4 @@ pytest -k highlights -v            # filter by keyword
 | 9 | Scheduler | ✅ — APScheduler in FastAPI lifespan; per-project daily status job + weekly aggregation→highlights pipeline (cutoff + offset); idempotent start/stop; misfire grace; scheduler-status CLI; ~20 tests |
 | 10 | Notifications (mocked SMTP) | ✅ — `send_engineer_reminder()` writes to `logs/sent_emails.jsonl` + `ReminderLog` DB; orchestrators `run_pre_cutoff_reminders()` (all engineers) + `run_post_cutoff_reminders()` (only those missing JIRA activity); scheduler fires both per project per week (cutoff ± hours); `run-reminders` + `show-last-reminders` CLIs; ~25 tests |
 | 11 | API routes | ✅ — Public REST API: `/api/projects` (list/detail/tasks), `/api/projects/{code}/status` (current/history/refresh), `/api/projects/{code}/reports` (list/latest/by-week/regenerate/highlights-refresh), `/admin/{config,logs/{ai-computes,reminders,sync},scheduler/jobs}`; ~25 tests via FastAPI TestClient |
-| 12 | End-to-end test on one real project | ⬜ |
+| 12 | End-to-end test on one real project | ✅ — `tests/test_e2e.py` (4 integration tests wiring all engines + DB + API end-to-end with mocked LLM/JIRA/Confluence); `scripts/e2e_smoke.py` (10-step CLI runbook against real environment with [OK]/[FAIL] reporting) |
