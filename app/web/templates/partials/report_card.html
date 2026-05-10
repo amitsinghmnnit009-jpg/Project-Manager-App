@@ -1,0 +1,91 @@
+{# Weekly-report card. Used inline on the project detail page AND as the
+   htmx swap target when a past week is clicked or a trigger button finishes.
+   The whole card swaps via outerHTML — that's why this template includes
+   the <div id="report-card"> wrapper. #}
+{% from "_macros.html" import fmt_dt %}
+
+<div id="report-card" class="bg-white border border-slate-200 rounded-md overflow-hidden">
+
+  {# ----- Header bar with week + trigger buttons --------------------- #}
+  <div class="px-4 py-2 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2">
+    {% if report %}
+    <div class="flex items-center gap-3">
+      <h2 class="text-sm font-semibold text-slate-900">
+        Weekly report — week of <span class="font-mono">{{ report.week_of }}</span>
+      </h2>
+      <span class="text-xs text-slate-500">
+        generated {{ fmt_dt(report.generated_at) }}
+        {%- if report.regenerated_count > 0 %} · regen ×{{ report.regenerated_count }}{% endif %}
+      </span>
+      {% if not report.has_highlights %}
+      <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600"
+            title="Highlights section not generated yet">no highlights</span>
+      {% endif %}
+    </div>
+
+    <div class="flex items-center gap-2">
+      <span id="report-spinner-{{ report.week_of }}"
+            class="htmx-indicator text-xs text-slate-500 italic">
+        running…
+      </span>
+      <button
+        hx-post="/projects/{{ project.code }}/reports/{{ report.week_of }}/regenerate"
+        hx-target="#report-card"
+        hx-swap="outerHTML"
+        hx-disabled-elt="this"
+        hx-indicator="#report-spinner-{{ report.week_of }}"
+        class="px-2 py-1 rounded text-xs font-medium bg-slate-900 text-white
+               hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed">
+        Regenerate
+      </button>
+      <button
+        hx-post="/projects/{{ project.code }}/reports/{{ report.week_of }}/highlights/refresh"
+        hx-target="#report-card"
+        hx-swap="outerHTML"
+        hx-disabled-elt="this"
+        hx-indicator="#report-spinner-{{ report.week_of }}"
+        class="px-2 py-1 rounded text-xs font-medium bg-white border border-slate-300 text-slate-700
+               hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed">
+        Refresh highlights
+      </button>
+    </div>
+    {% else %}
+    <h2 class="text-sm font-semibold text-slate-900">Weekly report</h2>
+    {% endif %}
+  </div>
+
+  {# ----- Body ------------------------------------------------------- #}
+  {% if report %}
+    {% if report.content_markdown %}
+    <article class="px-4 py-4 prose prose-sm prose-slate max-w-none
+                    prose-headings:text-slate-900 prose-headings:font-semibold
+                    prose-h1:text-base prose-h2:text-sm prose-h3:text-sm
+                    prose-table:text-xs prose-table:border-collapse
+                    prose-th:border prose-th:border-slate-200 prose-th:px-2 prose-th:py-1 prose-th:bg-slate-50
+                    prose-td:border prose-td:border-slate-200 prose-td:px-2 prose-td:py-1
+                    max-h-[600px] overflow-y-auto">
+      {{ report.content_markdown | markdown }}
+    </article>
+    {% else %}
+    <div class="px-4 py-6 text-center text-sm text-slate-500 italic">
+      Report exists but body is empty.
+    </div>
+    {% endif %}
+
+    <div class="px-4 py-2 border-t border-slate-100 text-[11px] text-slate-400">
+      prompt {{ report.prompt_version_aggregation or "?" }}
+      {%- if report.has_highlights %} · highlights {{ report.prompt_version_highlights }}{% endif %}
+      · LLM {{ report.llm_mode_used or "?" }}
+    </div>
+  {% else %}
+    <div class="p-6 text-center text-sm text-slate-500">
+      No weekly reports yet for this project.<br>
+      <span class="text-xs text-slate-400">
+        The scheduler runs Aggregation each Monday after the cutoff. To
+        trigger one now, use:
+        <code class="text-slate-700">POST /api/projects/{{ project.code }}/reports/&lt;MONDAY&gt;/regenerate</code>
+      </span>
+    </div>
+  {% endif %}
+
+</div>

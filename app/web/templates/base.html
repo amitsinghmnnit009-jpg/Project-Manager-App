@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Project Manager{% endblock %}</title>
 
-  {# Tailwind via Play CDN — no build step. See PHASE2_FUNCTIONAL_REQUIREMENTS.md §3. #}
-  <script src="https://cdn.tailwindcss.com"></script>
+  {# Tailwind via Play CDN — no build step. See PHASE2_FUNCTIONAL_REQUIREMENTS.md §3.
+     `?plugins=typography` enables `prose` classes used to style the
+     AI-generated weekly-report markdown on the project detail page (W4). #}
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
 
   {# htmx for click-to-swap interactivity without writing JS. #}
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>

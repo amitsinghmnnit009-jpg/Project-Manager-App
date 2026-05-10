@@ -9,13 +9,17 @@ HTML routes call existing Phase 1 service functions DIRECTLY (NOT via HTTP
 self-loopback) — see PHASE2_FUNCTIONAL_REQUIREMENTS.md §6.
 """
 from __future__ import annotations
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+import re
+
+import markdown as _md
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from sqlalchemy import select
 
 
@@ -24,6 +28,42 @@ TEMPLATES_DIR = _WEB_DIR / "templates"
 STATIC_DIR = _WEB_DIR / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+# Jinja `markdown` filter — converts the AI-generated WeeklyReport
+# content_markdown to HTML for inline rendering on the project detail page.
+# Per FR §5.3: standard markdown + fenced_code + tables.
+#
+# The python-markdown library DOES pass raw HTML through (its `safe_mode`
+# was removed in v3). For POC we apply a tiny regex stripper as defense in
+# depth — strips <script> tags and on*= inline event handlers. AI-generated
+# weekly reports aren't expected to contain HTML, so this is belt-and-
+# suspenders only. A production deployment with multiple users / external
+# input should add `bleach` for full sanitization (Phase 3 / Theme 8).
+
+_SCRIPT_BLOCK_RE = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.IGNORECASE | re.DOTALL)
+_SCRIPT_TAG_RE = re.compile(r"<script\b[^>]*/?>", re.IGNORECASE)
+_INLINE_HANDLER_RE = re.compile(
+    r"\son[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)",
+    re.IGNORECASE,
+)
+
+
+def _strip_dangerous_html(html: str) -> str:
+    html = _SCRIPT_BLOCK_RE.sub("", html)
+    html = _SCRIPT_TAG_RE.sub("", html)
+    html = _INLINE_HANDLER_RE.sub("", html)
+    return html
+
+
+def _md_to_html(text: Optional[str]) -> Markup:
+    if not text:
+        return Markup("")
+    html = _md.markdown(text, extensions=["fenced_code", "tables"])
+    return Markup(_strip_dangerous_html(html))
+
+
+templates.env.filters["markdown"] = _md_to_html
 
 router = APIRouter(tags=["web"], include_in_schema=False)
 
@@ -180,6 +220,76 @@ def portfolio_refresh_all():
 # Number of trailing status-history points to render in the sparkline.
 SPARKLINE_POINTS = 8
 
+# How many past weekly reports to list under the report card (W4).
+PAST_REPORTS_LIMIT = 20
+
+
+def _load_report(project_id: int, week_of: Optional[date] = None) -> Optional[dict]:
+    """Latest WeeklyReport row for a project (or for a specific week if
+    week_of is given). Snapshots fields before session closes."""
+    from app.db import session_scope
+    from app.models import WeeklyReport
+
+    with session_scope() as s:
+        q = (
+            select(WeeklyReport)
+            .where(WeeklyReport.project_id == project_id)
+        )
+        if week_of is not None:
+            q = q.where(WeeklyReport.week_of == week_of)
+        else:
+            q = q.order_by(WeeklyReport.week_of.desc())
+        row = s.execute(q.limit(1)).scalar_one_or_none()
+        if row is None:
+            return None
+        return {
+            "week_of": row.week_of,
+            "generated_at": row.generated_at,
+            "regenerated_count": row.regenerated_count or 0,
+            "last_regenerated_at": row.last_regenerated_at,
+            "content_markdown": row.content_markdown or "",
+            "prompt_version_aggregation": row.prompt_version_aggregation or "",
+            "prompt_version_highlights": row.prompt_version_highlights or "",
+            "llm_mode_used": row.llm_mode_used or "",
+            "has_highlights": bool(row.prompt_version_highlights),
+        }
+
+
+def _load_past_reports(project_id: int, limit: int) -> list[dict]:
+    """List of past weekly reports (newest first), summary fields only —
+    no markdown body. Used to populate the past-reports list."""
+    from app.db import session_scope
+    from app.models import WeeklyReport
+
+    with session_scope() as s:
+        rows = s.execute(
+            select(WeeklyReport)
+            .where(WeeklyReport.project_id == project_id)
+            .order_by(WeeklyReport.week_of.desc())
+            .limit(limit)
+        ).scalars().all()
+        return [
+            {
+                "week_of": r.week_of,
+                "generated_at": r.generated_at,
+                "regenerated_count": r.regenerated_count or 0,
+                "has_highlights": bool(r.prompt_version_highlights),
+            }
+            for r in rows
+        ]
+
+
+def _render_report_card(request: Request, project: dict,
+                        report: Optional[dict]) -> "Response":
+    """Render the report-card partial. Used both inline on the project
+    detail page and as the htmx swap target when switching weeks or
+    re-running engines."""
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/report_card.html",
+        context={"project": project, "report": report},
+    )
+
 
 def _load_status_history(project_id: int, limit: int) -> list[dict]:
     """Latest N ProjectStatusHistory rows, oldest-first for left-to-right
@@ -246,6 +356,8 @@ def project_detail(request: Request, code: str):
     status = _load_status(project["id"])
     history = _load_status_history(project["id"], SPARKLINE_POINTS)
     is_stale = _is_stale(status["computed_at"]) if status else False
+    latest_report = _load_report(project["id"])
+    past_reports = _load_past_reports(project["id"], PAST_REPORTS_LIMIT)
 
     return templates.TemplateResponse(
         request=request,
@@ -256,8 +368,73 @@ def project_detail(request: Request, code: str):
             "history": history,
             "is_stale": is_stale,
             "stale_threshold_days": STALE_THRESHOLD_DAYS,
+            "report": latest_report,
+            "past_reports": past_reports,
         },
     )
+
+
+# ---- W4: report card fragment + triggers ------------------------------
+
+@router.get("/projects/{code}/reports/{week_of}/fragment",
+            summary="Report card partial for a specific week (htmx swap target)")
+def project_report_fragment(request: Request, code: str, week_of: date):
+    from fastapi import HTTPException
+    from app.registry.projects import get_project_by_code
+
+    project = get_project_by_code(code)
+    if project is None:
+        raise HTTPException(404, f"Project {code!r} not found in registry")
+
+    report = _load_report(project["id"], week_of=week_of)
+    if report is None:
+        raise HTTPException(
+            404,
+            f"No weekly report for {code!r} week of {week_of}",
+        )
+    return _render_report_card(request, project, report)
+
+
+@router.post("/projects/{code}/reports/{week_of}/regenerate",
+             summary="Re-run Aggregation Engine for a specific week, return fragment")
+def project_report_regenerate(request: Request, code: str, week_of: date):
+    from fastapi import HTTPException
+    from app.engines.aggregation import run_weekly_aggregation
+    from app.registry.projects import get_project_by_code
+
+    project = get_project_by_code(code)
+    if project is None:
+        raise HTTPException(404, f"Project {code!r} not found in registry")
+
+    try:
+        run_weekly_aggregation(code, week_of=week_of, regenerate=True)
+    except Exception:
+        # Same swallow-and-continue pattern as refresh-all / refresh-status.
+        # The error is in AIComputeLog + system.jsonl already.
+        pass
+
+    report = _load_report(project["id"], week_of=week_of)
+    return _render_report_card(request, project, report)
+
+
+@router.post("/projects/{code}/reports/{week_of}/highlights/refresh",
+             summary="Re-run Highlights Engine for a specific week, return fragment")
+def project_highlights_refresh(request: Request, code: str, week_of: date):
+    from fastapi import HTTPException
+    from app.engines.highlights import run_highlights
+    from app.registry.projects import get_project_by_code
+
+    project = get_project_by_code(code)
+    if project is None:
+        raise HTTPException(404, f"Project {code!r} not found in registry")
+
+    try:
+        run_highlights(code, week_of=week_of)
+    except Exception:
+        pass
+
+    report = _load_report(project["id"], week_of=week_of)
+    return _render_report_card(request, project, report)
 
 
 @router.get("/projects/{code}/jira-activity",

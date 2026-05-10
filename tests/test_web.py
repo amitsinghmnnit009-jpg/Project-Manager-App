@@ -611,3 +611,256 @@ def test_project_detail_page_includes_lazy_jira_loader(client, project_in_db):
     body = r.text
     assert f'hx-get="/projects/{project_in_db}/jira-activity"' in body
     assert 'hx-trigger="load"' in body
+
+
+# ========================================================================
+# W4 — Weekly report card + past-reports list + triggers
+# ========================================================================
+
+def _seed_weekly_report(project_id: int, week_of, *, content="## hello\nbody",
+                        regenerated_count: int = 0,
+                        prompt_v_agg: str = "agg-v1",
+                        prompt_v_hl: str = "hl-v1"):
+    from datetime import datetime, date as _date
+    from app.db import session_scope
+    from app.models import WeeklyReport
+    if isinstance(week_of, str):
+        week_of = _date.fromisoformat(week_of)
+    with session_scope() as s:
+        s.add(WeeklyReport(
+            project_id=project_id, week_of=week_of,
+            generated_at=datetime.utcnow(),
+            regenerated_count=regenerated_count,
+            content_markdown=content,
+            prompt_version_aggregation=prompt_v_agg,
+            prompt_version_highlights=prompt_v_hl,
+            llm_mode_used="ollama",
+        ))
+
+
+# ---- markdown filter ---------------------------------------------------
+
+def test_markdown_filter_renders_html():
+    from app.web.router import _md_to_html
+    html = str(_md_to_html("# Heading\n\n- one\n- two"))
+    assert "<h1>Heading</h1>" in html
+    assert "<ul>" in html and "<li>one</li>" in html
+
+
+def test_markdown_filter_handles_empty():
+    from app.web.router import _md_to_html
+    assert str(_md_to_html("")) == ""
+    assert str(_md_to_html(None)) == ""
+
+
+def test_markdown_filter_supports_tables_and_fenced_code():
+    from app.web.router import _md_to_html
+    md = "| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncode\n```"
+    html = str(_md_to_html(md))
+    assert "<table>" in html
+    assert "<pre>" in html
+    assert "<code>" in html
+
+
+def test_markdown_filter_strips_script_tags():
+    """Per FR §5.3 — the script-stripper kills <script> blocks."""
+    from app.web.router import _md_to_html
+    html = str(_md_to_html("Hello <script>alert(1)</script> world"))
+    assert "<script>" not in html.lower()
+    assert "alert(1)" not in html
+    # Surrounding text survives
+    assert "Hello" in html and "world" in html
+
+
+def test_markdown_filter_strips_inline_event_handlers():
+    """Per FR §5.3 — inline on* handlers are removed."""
+    from app.web.router import _md_to_html
+    html = str(_md_to_html('<a href="x" onclick="alert(1)">link</a>'))
+    assert "onclick" not in html.lower()
+    assert "alert(1)" not in html
+
+
+# ---- Project detail loads latest report inline ------------------------
+
+def test_project_detail_renders_latest_report_inline(client):
+    pid = _seed_project("RPTONE", "Report One")
+    _seed_weekly_report(pid, "2026-05-04",
+                        content="## What happened\nWe shipped X.")
+    r = client.get("/projects/RPTONE")
+    assert r.status_code == 200
+    body = r.text
+    # Markdown rendered to HTML
+    assert "<h2>What happened</h2>" in body
+    assert "We shipped X." in body
+    # Header chrome
+    assert "Weekly report — week of" in body
+    assert "2026-05-04" in body
+
+
+def test_project_detail_shows_no_reports_state_when_empty(client, project_in_db):
+    r = client.get(f"/projects/{project_in_db}")
+    assert r.status_code == 200
+    assert "No weekly reports yet" in r.text
+
+
+# ---- Past reports list -------------------------------------------------
+
+def test_past_reports_list_renders_when_reports_exist(client):
+    pid = _seed_project("PASTRPT", "Past Reports")
+    _seed_weekly_report(pid, "2026-04-20")
+    _seed_weekly_report(pid, "2026-04-27", regenerated_count=2)
+    _seed_weekly_report(pid, "2026-05-04")
+    r = client.get("/projects/PASTRPT")
+    assert r.status_code == 200
+    body = r.text
+    # All three weeks listed; latest is in the report card, others as links
+    assert "2026-04-20" in body
+    assert "2026-04-27" in body
+    assert "2026-05-04" in body
+    # Past-week buttons have htmx attrs swapping the report card
+    assert 'hx-get="/projects/PASTRPT/reports/2026-04-20/fragment"' in body
+    assert 'hx-target="#report-card"' in body
+    # The regen badge for the regen×2 row
+    assert "regen ×2" in body
+
+
+def test_past_reports_list_absent_when_no_reports(client, project_in_db):
+    r = client.get(f"/projects/{project_in_db}")
+    assert r.status_code == 200
+    assert "Past reports" not in r.text
+
+
+def test_load_past_reports_returns_newest_first(client):
+    pid = _seed_project("ORDERRPT")
+    _seed_weekly_report(pid, "2026-04-20")
+    _seed_weekly_report(pid, "2026-05-04")
+    _seed_weekly_report(pid, "2026-04-27")
+    from app.web.router import _load_past_reports
+    rows = _load_past_reports(pid, limit=20)
+    weeks = [r["week_of"].isoformat() for r in rows]
+    assert weeks == ["2026-05-04", "2026-04-27", "2026-04-20"]
+
+
+# ---- Report fragment endpoint -----------------------------------------
+
+def test_report_fragment_returns_rendered_card(client):
+    pid = _seed_project("FRAG", "Frag")
+    _seed_weekly_report(pid, "2026-04-27", content="## week of 04-27\nbody")
+    r = client.get("/projects/FRAG/reports/2026-04-27/fragment")
+    assert r.status_code == 200
+    body = r.text
+    assert 'id="report-card"' in body
+    assert "<h2>week of 04-27</h2>" in body
+    # Buttons re-target the new week
+    assert 'hx-post="/projects/FRAG/reports/2026-04-27/regenerate"' in body
+    assert 'hx-post="/projects/FRAG/reports/2026-04-27/highlights/refresh"' in body
+
+
+def test_report_fragment_404_for_unknown_week(client, project_in_db):
+    r = client.get(f"/projects/{project_in_db}/reports/2099-01-05/fragment")
+    assert r.status_code == 404
+
+
+def test_report_fragment_404_for_unknown_project(client):
+    r = client.get("/projects/DOES_NOT_EXIST/reports/2026-05-04/fragment")
+    assert r.status_code == 404
+
+
+# ---- Regenerate trigger -----------------------------------------------
+
+def test_regenerate_calls_aggregation_engine_and_returns_fragment(client, monkeypatch):
+    pid = _seed_project("REGEN", "Regen")
+    _seed_weekly_report(pid, "2026-05-04", content="## old", regenerated_count=0)
+
+    called: list[tuple] = []
+    def fake_agg(code: str, *, week_of=None, regenerate=False):
+        called.append((code, week_of, regenerate))
+        # After "running" we update the report content so the returned
+        # fragment shows the new body, like a real run would.
+        from app.db import session_scope
+        from app.models import WeeklyReport
+        from sqlalchemy import select as _sel
+        with session_scope() as s:
+            row = s.execute(_sel(WeeklyReport).where(
+                WeeklyReport.project_id == pid,
+                WeeklyReport.week_of == week_of,
+            )).scalar_one()
+            row.content_markdown = "## regenerated\nfresh body"
+            row.regenerated_count = (row.regenerated_count or 0) + 1
+        from types import SimpleNamespace
+        return SimpleNamespace(success=True, error=None, week_of=week_of,
+                               is_regeneration=True, engineer_count=1,
+                               activity_records=10, unmapped_authors_count=0,
+                               duration_seconds=0.01, content_markdown="## regenerated\nfresh body")
+    monkeypatch.setattr("app.engines.aggregation.run_weekly_aggregation", fake_agg)
+
+    r = client.post("/projects/REGEN/reports/2026-05-04/regenerate")
+    assert r.status_code == 200
+    body = r.text
+    assert called == [("REGEN", _date_from("2026-05-04"), True)]
+    # Fragment is the swap target
+    assert 'id="report-card"' in body
+    # Updated body appears in the fragment
+    assert "<h2>regenerated</h2>" in body
+    assert "fresh body" in body
+
+
+def test_regenerate_404_for_unknown_project(client):
+    r = client.post("/projects/DOES_NOT_EXIST/reports/2026-05-04/regenerate")
+    assert r.status_code == 404
+
+
+def test_regenerate_swallows_engine_failure(client, monkeypatch):
+    pid = _seed_project("REGFAIL")
+    _seed_weekly_report(pid, "2026-05-04")
+    def boom(code: str, *, week_of=None, regenerate=False):
+        raise RuntimeError("LLM down")
+    monkeypatch.setattr("app.engines.aggregation.run_weekly_aggregation", boom)
+    r = client.post("/projects/REGFAIL/reports/2026-05-04/regenerate")
+    # Still returns the fragment (with the un-updated report content)
+    assert r.status_code == 200
+    assert 'id="report-card"' in r.text
+
+
+# ---- Highlights refresh trigger ---------------------------------------
+
+def test_highlights_refresh_calls_engine_and_returns_fragment(client, monkeypatch):
+    pid = _seed_project("HLREF", "HL")
+    _seed_weekly_report(pid, "2026-05-04",
+                        prompt_v_hl="")  # no highlights yet
+
+    called: list[tuple] = []
+    def fake_hl(code: str, *, week_of=None):
+        called.append((code, week_of))
+        # Mark highlights as generated
+        from app.db import session_scope
+        from app.models import WeeklyReport
+        from sqlalchemy import select as _sel
+        with session_scope() as s:
+            row = s.execute(_sel(WeeklyReport).where(
+                WeeklyReport.project_id == pid,
+                WeeklyReport.week_of == week_of,
+            )).scalar_one()
+            row.prompt_version_highlights = "hl-v2"
+        from types import SimpleNamespace
+        return SimpleNamespace(success=True, error=None, week_of=week_of,
+                               is_first_week=False, last_week_of=None,
+                               duration_seconds=0.01, highlights_section="## Highlights\nstuff")
+    monkeypatch.setattr("app.engines.highlights.run_highlights", fake_hl)
+
+    r = client.post("/projects/HLREF/reports/2026-05-04/highlights/refresh")
+    assert r.status_code == 200
+    assert called == [("HLREF", _date_from("2026-05-04"))]
+    assert 'id="report-card"' in r.text
+
+
+def test_highlights_refresh_404_for_unknown_project(client):
+    r = client.post("/projects/DOES_NOT_EXIST/reports/2026-05-04/highlights/refresh")
+    assert r.status_code == 404
+
+
+# ---- Helper ------------------------------------------------------------
+
+def _date_from(s: str):
+    from datetime import date as _date
+    return _date.fromisoformat(s)

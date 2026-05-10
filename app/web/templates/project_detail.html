@@ -118,6 +118,53 @@
     {{ sparkline(history) }}
   </div>
 
+  {# ----- Weekly report card (latest week, swap target for past weeks) #}
+  {% include "partials/report_card.html" %}
+
+  {# ----- Past reports list ------------------------------------------- #}
+  {% if past_reports %}
+  <div class="bg-white border border-slate-200 rounded-md overflow-hidden">
+    <div class="px-4 py-2 border-b border-slate-200">
+      <h2 class="text-sm font-semibold text-slate-900">
+        Past reports <span class="text-slate-500 font-normal">({{ past_reports|length }})</span>
+      </h2>
+    </div>
+    <ul class="divide-y divide-slate-100 text-sm">
+      {% for r in past_reports %}
+      <li>
+        <button
+          hx-get="/projects/{{ project.code }}/reports/{{ r.week_of }}/fragment"
+          hx-target="#report-card"
+          hx-swap="outerHTML"
+          hx-indicator="#past-reports-spinner"
+          class="w-full text-left px-4 py-2 hover:bg-slate-50 flex items-center justify-between gap-4">
+          <div class="flex items-center gap-3">
+            <span class="font-mono text-slate-900">{{ r.week_of }}</span>
+            {% if r.regenerated_count > 0 %}
+            <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+              regen ×{{ r.regenerated_count }}
+            </span>
+            {% endif %}
+            {% if not r.has_highlights %}
+            <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+              no highlights
+            </span>
+            {% endif %}
+          </div>
+          <span class="text-xs text-slate-500">
+            generated {{ r.generated_at.strftime("%Y-%m-%d %H:%M") }} UTC
+          </span>
+        </button>
+      </li>
+      {% endfor %}
+    </ul>
+    <div id="past-reports-spinner"
+         class="htmx-indicator px-4 py-1 text-xs text-slate-500 italic border-t border-slate-100">
+      Loading week…
+    </div>
+  </div>
+  {% endif %}
+
   {# ----- Recent JIRA activity (lazy-loaded fragment) ----------------- #}
   <div class="bg-white border border-slate-200 rounded-md overflow-hidden">
     <div class="px-4 py-2 border-b border-slate-200 flex items-center justify-between">
