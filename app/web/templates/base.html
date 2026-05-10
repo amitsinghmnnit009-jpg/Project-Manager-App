@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Project Manager{% endblock %}</title>
+
+  {# Tailwind via Play CDN — no build step. See PHASE2_FUNCTIONAL_REQUIREMENTS.md §3. #}
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  {# htmx for click-to-swap interactivity without writing JS. #}
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+
+  <header class="bg-white border-b border-slate-200">
+    <div class="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+      <a href="/portfolio" class="text-lg font-semibold text-slate-900 hover:text-slate-700">
+        Project Manager
+      </a>
+      <nav class="text-sm space-x-4">
+        <a href="/portfolio" class="text-slate-600 hover:text-slate-900">Portfolio</a>
+        <a href="/admin" class="text-slate-600 hover:text-slate-900">Admin</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 py-6">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="max-w-7xl mx-auto px-6 py-4 text-xs text-slate-400">
+    Phase 2 POC — server-rendered UI on Phase 1 backend.
+  </footer>
+
+</body>
+</html>

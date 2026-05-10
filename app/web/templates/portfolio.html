@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Portfolio — Project Manager{% endblock %}
+
+{% block content %}
+<section class="space-y-6">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-2xl font-semibold text-slate-900">Portfolio</h1>
+    <span class="text-xs text-slate-400">W1 skeleton — needs-attention card lands in W2</span>
+  </div>
+
+  {% if projects %}
+  <div class="bg-white border border-slate-200 rounded-md overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600 text-left">
+        <tr>
+          <th class="px-4 py-2 font-medium">Code</th>
+          <th class="px-4 py-2 font-medium">Name</th>
+          <th class="px-4 py-2 font-medium">Type</th>
+          <th class="px-4 py-2 font-medium">Owning TL</th>
+          <th class="px-4 py-2 font-medium">Owning PGM</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for p in projects %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-2 font-mono text-slate-900">{{ p.code }}</td>
+          <td class="px-4 py-2">{{ p.name }}</td>
+          <td class="px-4 py-2 text-slate-600">{{ p.type or "general" }}</td>
+          <td class="px-4 py-2 text-slate-600">{{ p.owning_tl or "—" }}</td>
+          <td class="px-4 py-2 text-slate-600">{{ p.owning_pgm or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="bg-white border border-slate-200 rounded-md p-6 text-center text-slate-500">
+    No projects in the registry yet. Check <code>config.json</code> and restart, or call
+    <code>POST /admin/registry/sync</code>.
+  </div>
+  {% endif %}
+
+</section>
+{% endblock %}

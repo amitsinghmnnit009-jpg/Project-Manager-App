@@ -1,10 +1,14 @@
 """FastAPI app entrypoint.
 
 Minimal in scaffold — just /health for now. Routers are wired in Step 11.
+Phase 2 (W1) adds the server-rendered HTML routes under app.web, gated
+by the PM_UI_ENABLED env var (default: enabled).
 """
 from __future__ import annotations
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.config import get_config
@@ -97,3 +101,15 @@ app.include_router(projects_router)
 app.include_router(status_router)
 app.include_router(reports_router)
 app.include_router(admin_router)
+
+
+# Phase 2 (W1) — server-rendered HTML UI. Gated by env var so headless
+# deployments can disable it. Default: enabled.
+def _ui_enabled() -> bool:
+    return os.environ.get("PM_UI_ENABLED", "true").strip().lower() != "false"
+
+
+if _ui_enabled():
+    from app.web.router import router as web_router, STATIC_DIR
+    app.include_router(web_router)
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
