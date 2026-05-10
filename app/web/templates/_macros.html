@@ -1,0 +1,64 @@
+{# Reusable Jinja macros — color/badge mapping per PHASE2_FUNCTIONAL_REQUIREMENTS.md §5.1.
+   Canonical enum values match app/engines/_status_prompt.py:
+     overall_health   : Green | Amber | Red | InsufficientEvidence
+     schedule_status  : OnTrack | AtRisk | Slipping | Delayed | InsufficientEvidence
+     confidence       : High | Medium | Low
+#}
+
+{% macro health_badge(value) -%}
+  {% set v = value or "InsufficientEvidence" %}
+  {% if v == "Red" %}
+    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+      <span class="w-2 h-2 rounded-full bg-red-600"></span>Red
+    </span>
+  {% elif v == "Amber" %}
+    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+      <span class="w-2 h-2 rounded-full bg-amber-500"></span>Amber
+    </span>
+  {% elif v == "Green" %}
+    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+      <span class="w-2 h-2 rounded-full bg-green-500"></span>Green
+    </span>
+  {% else %}
+    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600">
+      <span class="w-2 h-2 rounded-full bg-slate-400 ring-1 ring-slate-300"></span>—
+    </span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro schedule_text(value) -%}
+  {% set v = value or "InsufficientEvidence" %}
+  {% if v == "OnTrack" %}<span class="text-green-700">On track</span>
+  {% elif v == "AtRisk" %}<span class="text-amber-700">At risk</span>
+  {% elif v == "Slipping" %}<span class="text-red-700">Slipping</span>
+  {% elif v == "Delayed" %}<span class="text-red-700 font-medium">Delayed</span>
+  {% else %}<span class="text-slate-400">—</span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro confidence_text(value) -%}
+  {% set v = value or "Low" %}
+  {% if v == "Low" %}<span class="text-amber-600 italic text-xs">low conf.</span>
+  {% elif v == "Medium" %}<span class="text-slate-500 italic text-xs">med. conf.</span>
+  {% else %}<span class="text-slate-400 italic text-xs">{{ v|lower }} conf.</span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro stale_badge(is_stale, threshold_days) -%}
+  {% if is_stale %}
+    <span class="inline-block ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-800"
+          title="Last computed more than {{ threshold_days }} days ago">stale</span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro completion_pct(value) -%}
+  {% if value is none %}<span class="text-slate-400">—</span>
+  {% else %}{{ value }}%
+  {% endif %}
+{%- endmacro %}
+
+{% macro fmt_dt(dt) -%}
+  {% if dt %}{{ dt.strftime("%Y-%m-%d %H:%M") }} UTC
+  {% else %}<span class="text-slate-400">never</span>
+  {% endif %}
+{%- endmacro %}

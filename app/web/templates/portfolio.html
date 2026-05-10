@@ -1,34 +1,120 @@
 {% extends "base.html" %}
+{% from "_macros.html" import health_badge, schedule_text, confidence_text, stale_badge, completion_pct, fmt_dt %}
+
 {% block title %}Portfolio — Project Manager{% endblock %}
 
 {% block content %}
 <section class="space-y-6">
 
+  {# ----- Page header + Refresh-all button ------------------------------ #}
   <div class="flex items-center justify-between">
     <h1 class="text-2xl font-semibold text-slate-900">Portfolio</h1>
-    <span class="text-xs text-slate-400">W1 skeleton — needs-attention card lands in W2</span>
+
+    {% if rows %}
+    <div class="flex items-center gap-3">
+      <span id="refresh-spinner"
+            class="htmx-indicator text-sm text-slate-500 italic">
+        Refreshing all projects (~30–60s)…
+      </span>
+      <button
+        hx-post="/portfolio/refresh-all"
+        hx-disabled-elt="this"
+        hx-indicator="#refresh-spinner"
+        class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-medium
+               hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed">
+        Refresh all
+      </button>
+    </div>
+    {% endif %}
   </div>
 
-  {% if projects %}
+  {# ----- Needs-attention card ----------------------------------------- #}
+  {% if attention_rows %}
+  <div class="bg-white border border-amber-200 rounded-md overflow-hidden">
+    <div class="bg-amber-50 px-4 py-2 border-b border-amber-200 flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-amber-900">
+        Needs attention
+        <span class="text-amber-700 font-normal">({{ attention_rows|length }})</span>
+      </h2>
+      <span class="text-xs text-amber-700">red &amp; amber overall health</span>
+    </div>
+    <ul class="divide-y divide-amber-100">
+      {% for r in attention_rows %}
+      <li class="px-4 py-3 hover:bg-amber-50/50">
+        <div class="flex items-center justify-between gap-4">
+          <div class="flex items-center gap-3 min-w-0">
+            {{ health_badge(r.status.overall_health) }}
+            <a href="/projects/{{ r.project.code }}"
+               class="font-mono text-sm font-medium text-slate-900 hover:text-slate-700">
+              {{ r.project.code }}
+            </a>
+            <span class="text-sm text-slate-700 truncate">{{ r.project.name }}</span>
+            {{ stale_badge(r.is_stale, stale_threshold_days) }}
+          </div>
+          <div class="flex items-center gap-4 text-xs text-slate-600 shrink-0">
+            <span>schedule: {{ schedule_text(r.status.schedule_status) }}</span>
+            <span>{{ completion_pct(r.status.completion_pct) }}</span>
+            {{ confidence_text(r.status.confidence) }}
+          </div>
+        </div>
+        {% if r.status.rationale %}
+        <p class="mt-1 text-xs text-slate-600 line-clamp-2">
+          {{ r.status.rationale[:240] }}{% if r.status.rationale|length > 240 %}…{% endif %}
+        </p>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ----- All projects table ------------------------------------------- #}
+  {% if rows %}
   <div class="bg-white border border-slate-200 rounded-md overflow-hidden">
+    <div class="px-4 py-2 border-b border-slate-200">
+      <h2 class="text-sm font-semibold text-slate-900">
+        All projects <span class="text-slate-500 font-normal">({{ rows|length }})</span>
+      </h2>
+    </div>
     <table class="w-full text-sm">
-      <thead class="bg-slate-50 text-slate-600 text-left">
+      <thead class="bg-slate-50 text-slate-600 text-left text-xs uppercase tracking-wide">
         <tr>
           <th class="px-4 py-2 font-medium">Code</th>
           <th class="px-4 py-2 font-medium">Name</th>
-          <th class="px-4 py-2 font-medium">Type</th>
-          <th class="px-4 py-2 font-medium">Owning TL</th>
-          <th class="px-4 py-2 font-medium">Owning PGM</th>
+          <th class="px-4 py-2 font-medium">Health</th>
+          <th class="px-4 py-2 font-medium">Schedule</th>
+          <th class="px-4 py-2 font-medium text-right">Completion</th>
+          <th class="px-4 py-2 font-medium">Last computed</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
-        {% for p in projects %}
+        {% for r in rows %}
         <tr class="hover:bg-slate-50">
-          <td class="px-4 py-2 font-mono text-slate-900">{{ p.code }}</td>
-          <td class="px-4 py-2">{{ p.name }}</td>
-          <td class="px-4 py-2 text-slate-600">{{ p.type or "general" }}</td>
-          <td class="px-4 py-2 text-slate-600">{{ p.owning_tl or "—" }}</td>
-          <td class="px-4 py-2 text-slate-600">{{ p.owning_pgm or "—" }}</td>
+          <td class="px-4 py-2 font-mono">
+            <a href="/projects/{{ r.project.code }}"
+               class="text-slate-900 hover:text-slate-700">{{ r.project.code }}</a>
+          </td>
+          <td class="px-4 py-2 text-slate-700">{{ r.project.name }}</td>
+          <td class="px-4 py-2">
+            {% if r.status %}{{ health_badge(r.status.overall_health) }}
+            {% else %}<span class="text-xs text-slate-400 italic">never run</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-2 text-sm">
+            {% if r.status %}{{ schedule_text(r.status.schedule_status) }}
+            {% else %}—
+            {% endif %}
+          </td>
+          <td class="px-4 py-2 text-right text-sm">
+            {% if r.status %}{{ completion_pct(r.status.completion_pct) }}
+            {% else %}—
+            {% endif %}
+          </td>
+          <td class="px-4 py-2 text-xs text-slate-500">
+            {% if r.status %}{{ fmt_dt(r.status.computed_at) }}{{ stale_badge(r.is_stale, stale_threshold_days) }}
+            {% else %}<span class="text-slate-400 italic">—</span>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -36,8 +122,7 @@
   </div>
   {% else %}
   <div class="bg-white border border-slate-200 rounded-md p-6 text-center text-slate-500">
-    No projects in the registry yet. Check <code>config.json</code> and restart, or call
-    <code>POST /admin/registry/sync</code>.
+    No projects in the registry yet. Check <code class="text-slate-700">config.json</code> and restart.
   </div>
   {% endif %}
 
