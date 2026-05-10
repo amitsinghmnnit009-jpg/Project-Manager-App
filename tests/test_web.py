@@ -864,3 +864,228 @@ def test_highlights_refresh_404_for_unknown_project(client):
 def _date_from(s: str):
     from datetime import date as _date
     return _date.fromisoformat(s)
+
+
+# ========================================================================
+# W5 — Compare weeks
+# ========================================================================
+
+# ---- Highlights extractor ---------------------------------------------
+
+def test_extract_highlights_section_finds_block():
+    from app.web.router import _extract_highlights_section
+    md = (
+        "## What happened\n"
+        "stuff\n\n"
+        "## Highlights\n"
+        "- Closed 5 bugs\n"
+        "- Shipped X\n\n"
+        "## Risks\n"
+        "blocker A\n"
+    )
+    out = _extract_highlights_section(md)
+    assert out is not None
+    assert "Closed 5 bugs" in out
+    assert "Shipped X" in out
+    # Must NOT bleed into next section
+    assert "blocker A" not in out
+    assert "stuff" not in out
+
+
+def test_extract_highlights_section_matches_variant_heading():
+    from app.web.router import _extract_highlights_section
+    md = "## Highlights vs prior week\n- foo\n\n## Next\nbar"
+    out = _extract_highlights_section(md)
+    assert out is not None
+    assert "foo" in out
+    assert "bar" not in out
+
+
+def test_extract_highlights_section_returns_none_when_absent():
+    from app.web.router import _extract_highlights_section
+    md = "## What happened\nno highlights here"
+    assert _extract_highlights_section(md) is None
+    assert _extract_highlights_section("") is None
+    assert _extract_highlights_section(None) is None
+
+
+def test_extract_highlights_section_when_last_section():
+    """No following ## heading — returns from match to end of string."""
+    from app.web.router import _extract_highlights_section
+    md = "## Highlights\n- only line"
+    out = _extract_highlights_section(md)
+    assert out is not None
+    assert "only line" in out
+
+
+# ---- Status-at-week lookup --------------------------------------------
+
+def test_load_status_at_week_picks_most_recent_within_window(client):
+    pid = _seed_project("STATWIN")
+    _seed_status_history(pid, [
+        ("2026-04-15T10:00:00", 30),
+        ("2026-04-22T10:00:00", 50),
+        ("2026-05-01T10:00:00", 65),
+        ("2026-05-08T10:00:00", 75),
+    ])
+    from app.web.router import _load_status_at_week
+    from datetime import date
+
+    # Week of 2026-04-20 covers 04-20..04-26 — latest <= 04-26 is 04-22 (50%)
+    s = _load_status_at_week(pid, date(2026, 4, 20))
+    assert s is not None
+    assert s["new_completion_pct"] == 50
+
+    # Week of 2026-05-04 covers 05-04..05-10 — latest <= 05-10 is 05-08 (75%)
+    s = _load_status_at_week(pid, date(2026, 5, 4))
+    assert s["new_completion_pct"] == 75
+
+    # Way before any history → None
+    assert _load_status_at_week(pid, date(2025, 1, 1)) is None
+
+
+# ---- weeks query-param parser -----------------------------------------
+
+def test_parse_weeks_param_handles_valid_and_skips_garbage():
+    from app.web.router import _parse_weeks_param
+    out = _parse_weeks_param("2026-05-04,2026-04-27, ,not-a-date,2026-04-20")
+    iso = [d.isoformat() for d in out]
+    assert iso == ["2026-05-04", "2026-04-27", "2026-04-20"]
+
+
+def test_parse_weeks_param_empty_returns_empty():
+    from app.web.router import _parse_weeks_param
+    assert _parse_weeks_param("") == []
+    assert _parse_weeks_param(",,,") == []
+
+
+# ---- Compare route ----------------------------------------------------
+
+def test_compare_404_for_unknown_project(client):
+    r = client.get("/projects/DOES_NOT_EXIST/compare")
+    assert r.status_code == 404
+
+
+def test_compare_empty_state_when_no_reports(client, project_in_db):
+    r = client.get(f"/projects/{project_in_db}/compare")
+    assert r.status_code == 200
+    body = r.text
+    assert "No weekly reports yet" in body
+    # Picker form should NOT render when there's nothing to pick
+    assert "Pick 2" not in body
+
+
+def test_compare_default_shows_last_2_weeks(client):
+    pid = _seed_project("DEFCMP", "Default Compare")
+    _seed_weekly_report(pid, "2026-04-20")
+    _seed_weekly_report(pid, "2026-04-27")
+    _seed_weekly_report(pid, "2026-05-04")
+    r = client.get("/projects/DEFCMP/compare")
+    assert r.status_code == 200
+    body = r.text
+    # All three weeks appear in the picker dropdowns
+    assert "2026-04-20" in body and "2026-04-27" in body and "2026-05-04" in body
+    # Default columns = last 2 weeks (newest), oldest-on-left → 04-27, 05-04.
+    # We slice to the columns area (after the grid-template-columns inline
+    # style) so the picker dropdowns don't pollute the position check.
+    columns_html = body.split("grid-template-columns:")[1]
+    pos_27 = columns_html.find("2026-04-27")
+    pos_04 = columns_html.find("2026-05-04")
+    pos_20 = columns_html.find("2026-04-20")
+    assert pos_27 != -1 and pos_04 != -1
+    assert pos_27 < pos_04, "older week should appear before newer week"
+    # 2026-04-20 should NOT be a column (only in dropdowns above the columns)
+    assert pos_20 == -1
+
+
+def test_compare_renders_explicit_weeks_param(client):
+    pid = _seed_project("EXPCMP", "Explicit Compare")
+    _seed_weekly_report(pid, "2026-04-20", content="## Highlights\nweek 1 hl")
+    _seed_weekly_report(pid, "2026-04-27", content="## Highlights\nweek 2 hl")
+    _seed_weekly_report(pid, "2026-05-04", content="## Highlights\nweek 3 hl")
+    r = client.get(
+        "/projects/EXPCMP/compare?weeks=2026-04-20,2026-05-04"
+    )
+    assert r.status_code == 200
+    body = r.text
+    assert "week 1 hl" in body
+    assert "week 3 hl" in body
+    # Middle week (04-27) is NOT in the columns, only in the picker — make sure
+    # its highlights body text doesn't appear
+    assert "week 2 hl" not in body
+
+
+def test_compare_caps_at_max_columns(client, monkeypatch):
+    pid = _seed_project("MAXCMP")
+    for w in ["2026-04-06", "2026-04-13", "2026-04-20",
+              "2026-04-27", "2026-05-04", "2026-05-11"]:
+        _seed_weekly_report(pid, w, content=f"## Highlights\nbody {w}")
+    # Request 6 — should be capped at 4 (COMPARE_MAX_COLUMNS)
+    r = client.get(
+        "/projects/MAXCMP/compare?weeks=2026-04-06,2026-04-13,2026-04-20,"
+        "2026-04-27,2026-05-04,2026-05-11"
+    )
+    assert r.status_code == 200
+    body = r.text
+    # First 4 should appear in column headers/highlights bodies
+    assert "body 2026-04-06" in body
+    assert "body 2026-04-27" in body
+    # 5th and 6th should NOT appear in highlights bodies (only in dropdowns)
+    assert "body 2026-05-04" not in body
+    assert "body 2026-05-11" not in body
+
+
+def test_compare_skips_invalid_dates_in_weeks_param(client):
+    pid = _seed_project("BADCMP")
+    _seed_weekly_report(pid, "2026-05-04", content="## Highlights\nvalid one")
+    r = client.get(
+        "/projects/BADCMP/compare?weeks=junk,2026-05-04,more-junk"
+    )
+    assert r.status_code == 200
+    assert "valid one" in r.text
+
+
+def test_compare_includes_status_snapshot_when_history_exists(client):
+    pid = _seed_project("STATCMP")
+    _seed_weekly_report(pid, "2026-05-04",
+                        content="## Highlights\nshipped feature X")
+    # History at 2026-05-06 is within the week-of-2026-05-04 window
+    _seed_status_history(pid, [
+        ("2026-05-06T12:00:00", 88),
+    ])
+    r = client.get("/projects/STATCMP/compare?weeks=2026-05-04")
+    assert r.status_code == 200
+    body = r.text
+    # Completion % from history shows up in the column
+    assert "88%" in body
+    # Highlights body present
+    assert "shipped feature X" in body
+
+
+def test_compare_no_status_snapshot_when_no_history(client):
+    pid = _seed_project("NOHIST")
+    _seed_weekly_report(pid, "2026-05-04",
+                        content="## Highlights\nfoo")
+    r = client.get("/projects/NOHIST/compare?weeks=2026-05-04")
+    assert r.status_code == 200
+    assert "no status snapshot for this week" in r.text
+
+
+def test_compare_picker_form_lists_all_available_weeks(client):
+    pid = _seed_project("PICKER")
+    weeks = ["2026-04-13", "2026-04-20", "2026-04-27", "2026-05-04"]
+    for w in weeks:
+        _seed_weekly_report(pid, w)
+    r = client.get("/projects/PICKER/compare")
+    assert r.status_code == 200
+    body = r.text
+    # Each week should appear at least 4 times — once per dropdown <option>
+    for w in weeks:
+        assert body.count(w) >= 4
+
+
+def test_compare_link_present_on_project_detail_page(client, project_in_db):
+    r = client.get(f"/projects/{project_in_db}")
+    assert r.status_code == 200
+    assert f'href="/projects/{project_in_db}/compare"' in r.text
+    assert "Compare weeks" in r.text

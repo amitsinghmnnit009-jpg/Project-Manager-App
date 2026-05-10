@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% from "_macros.html" import health_badge, schedule_text, completion_pct, fmt_dt %}
+
+{% block title %}Compare weeks — {{ project.code }}{% endblock %}
+
+{% block content %}
+<section class="space-y-6">
+
+  {# ----- Back link + page header ------------------------------------- #}
+  <div>
+    <a href="/projects/{{ project.code }}"
+       class="text-sm text-slate-500 hover:text-slate-700">&larr; {{ project.code }}</a>
+  </div>
+
+  <h1 class="text-2xl font-semibold text-slate-900">
+    Compare weeks
+    <span class="text-slate-500 font-normal text-lg">— {{ project.code }} {{ project.name }}</span>
+  </h1>
+
+  {# ----- Week picker form ------------------------------------------- #}
+  {% if available_weeks %}
+  <form method="get" action="/projects/{{ project.code }}/compare"
+        class="bg-white border border-slate-200 rounded-md p-4 flex items-end gap-3 flex-wrap">
+    <p class="text-xs text-slate-500 w-full mb-1">
+      Pick 2–{{ max_columns }} weeks. Leave a slot as "(none)" to skip it.
+      Order is left-to-right.
+    </p>
+    {% for slot in range(max_columns) %}
+    <div>
+      <label class="block text-[11px] font-medium uppercase tracking-wide text-slate-500 mb-0.5">
+        Column {{ slot + 1 }}
+      </label>
+      <select name="weeks_{{ slot }}"
+              class="text-sm border border-slate-300 rounded px-2 py-1 bg-white
+                     focus:outline-none focus:ring-2 focus:ring-slate-500">
+        <option value="">(none)</option>
+        {% for w in available_weeks %}
+        <option value="{{ w }}"
+                {% if slot < selected|length and selected[slot] == w %}selected{% endif %}>
+          {{ w }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endfor %}
+    <button type="submit"
+            class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-medium
+                   hover:bg-slate-700">
+      Compare
+    </button>
+    {# Tiny inline JS to combine the per-slot selects into the one `weeks`
+       query param the route expects. ~6 lines, kept here intentionally —
+       see PHASE2_FUNCTIONAL_REQUIREMENTS.md §5.4. #}
+    <script>
+      document.currentScript.closest("form").addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        const form = ev.target;
+        const slots = [];
+        for (let i = 0; i < {{ max_columns }}; i++) {
+          const v = form.elements["weeks_" + i].value;
+          if (v) slots.push(v);
+        }
+        const url = new URL(form.action, window.location.origin);
+        if (slots.length) url.searchParams.set("weeks", slots.join(","));
+        window.location.href = url.toString();
+      });
+    </script>
+  </form>
+  {% else %}
+  <div class="bg-white border border-slate-200 rounded-md p-6 text-center text-slate-500">
+    No weekly reports yet for this project — nothing to compare.<br>
+    <span class="text-xs text-slate-400">
+      Generate one via the <a href="/projects/{{ project.code }}" class="underline">project detail page</a>
+      (Regenerate button) and come back here.
+    </span>
+  </div>
+  {% endif %}
+
+  {# ----- Side-by-side columns --------------------------------------- #}
+  {% if columns %}
+  <div class="grid gap-4"
+       style="grid-template-columns: repeat({{ columns|length }}, minmax(0, 1fr));">
+    {% for col in columns %}
+    <div class="bg-white border border-slate-200 rounded-md overflow-hidden flex flex-col">
+
+      {# Column header #}
+      <div class="px-4 py-2 border-b border-slate-200 bg-slate-50">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Week of</div>
+        <div class="font-mono text-sm font-semibold text-slate-900">{{ col.week_of }}</div>
+      </div>
+
+      {# Status snapshot (latest history at or before end of this week) #}
+      <div class="px-4 py-3 border-b border-slate-100 space-y-1">
+        {% if col.status %}
+          <div class="flex items-center gap-2">
+            {{ health_badge(col.status.new_health) }}
+            <span class="text-xs text-slate-500">
+              as of {{ col.status.computed_at.strftime("%Y-%m-%d") }}
+            </span>
+          </div>
+          <div class="text-sm">Schedule: {{ schedule_text(col.status.new_schedule) }}</div>
+          <div class="text-sm">Completion: <strong>{{ completion_pct(col.status.new_completion_pct) }}</strong></div>
+        {% else %}
+          <span class="text-xs text-slate-400 italic">no status snapshot for this week</span>
+        {% endif %}
+      </div>
+
+      {# Highlights section (excerpt) #}
+      <div class="px-4 py-3 border-b border-slate-100 flex-1">
+        <h3 class="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+          Highlights
+        </h3>
+        {% if col.highlights %}
+          <article class="prose prose-xs prose-slate max-w-none
+                          prose-headings:text-slate-900 prose-headings:font-semibold
+                          prose-h1:text-sm prose-h2:text-xs prose-h3:text-xs
+                          prose-p:text-xs prose-li:text-xs
+                          max-h-[400px] overflow-y-auto">
+            {{ col.highlights | markdown }}
+          </article>
+        {% elif col.report %}
+          <p class="text-xs text-slate-400 italic">
+            (no Highlights section — refresh highlights from the project page)
+          </p>
+        {% else %}
+          <p class="text-xs text-slate-400 italic">
+            (no report for this week)
+          </p>
+        {% endif %}
+      </div>
+
+      {# Footer metadata #}
+      {% if col.report %}
+      <div class="px-4 py-2 text-[11px] text-slate-400 bg-slate-50">
+        generated {{ col.report.generated_at.strftime("%Y-%m-%d %H:%M") }}
+        {% if col.report.regenerated_count > 0 %} · regen ×{{ col.report.regenerated_count }}{% endif %}
+      </div>
+      {% endif %}
+
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</section>
+{% endblock %}

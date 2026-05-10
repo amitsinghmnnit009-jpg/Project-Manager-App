@@ -437,6 +437,133 @@ def project_highlights_refresh(request: Request, code: str, week_of: date):
     return _render_report_card(request, project, report)
 
 
+# ========================================================================
+# W5 — Compare weeks (single project, 2–4 weeks side by side)
+# ========================================================================
+
+# Number of compare-column slots in the UI. Matches FR §4.3 "2–4 columns".
+COMPARE_MAX_COLUMNS = 4
+COMPARE_DEFAULT_COLUMNS = 2
+
+# Match a "## Highlights..." heading at the start of a line, case-insensitive.
+# Lets variants like "## Highlights vs prior week" match.
+_HIGHLIGHTS_HEADING_RE = re.compile(r"^##\s+highlight", re.IGNORECASE | re.MULTILINE)
+_NEXT_H2_RE = re.compile(r"^##\s+", re.MULTILINE)
+
+
+def _extract_highlights_section(markdown: Optional[str]) -> Optional[str]:
+    """Return the '## Highlights...' section of a weekly report's markdown,
+    or None if no such section exists. Used by the compare view to show
+    only the highlights block per column.
+
+    Per FR §4.3: split the markdown by `## ` headings; return the section
+    whose heading starts with "Highlight" (so "Highlights" and
+    "Highlights vs prior week" both match)."""
+    if not markdown:
+        return None
+    m = _HIGHLIGHTS_HEADING_RE.search(markdown)
+    if not m:
+        return None
+    section_start = m.start()
+    # Scan for the next ## heading after this one
+    after = markdown[m.end():]
+    next_match = _NEXT_H2_RE.search(after)
+    if next_match:
+        section_end = m.end() + next_match.start()
+        return markdown[section_start:section_end].rstrip()
+    return markdown[section_start:].rstrip()
+
+
+def _load_status_at_week(project_id: int, week_of: date) -> Optional[dict]:
+    """Latest ProjectStatusHistory entry whose computed_at falls at or
+    before the END of the given week (week_of + 6 days). Approximates
+    "what did the project look like at the end of week X?".
+
+    Returns the snapshotted fields (none if no history before that point)."""
+    from app.db import session_scope
+    from app.models import ProjectStatusHistory
+
+    week_end = datetime.combine(week_of + timedelta(days=6), datetime.max.time())
+    with session_scope() as s:
+        row = s.execute(
+            select(ProjectStatusHistory)
+            .where(
+                ProjectStatusHistory.project_id == project_id,
+                ProjectStatusHistory.computed_at <= week_end,
+            )
+            .order_by(ProjectStatusHistory.computed_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        return {
+            "computed_at": row.computed_at,
+            "new_health": row.new_health,
+            "new_schedule": row.new_schedule,
+            "new_completion_pct": row.new_completion_pct,
+        }
+
+
+def _parse_weeks_param(weeks: str) -> list[date]:
+    """Parse a comma-separated YYYY-MM-DD string into a list of dates.
+    Bad entries are skipped silently (POC — no error UI for malformed input)."""
+    out: list[date] = []
+    for token in (weeks or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            out.append(date.fromisoformat(token))
+        except ValueError:
+            continue
+    return out
+
+
+@router.get("/projects/{code}/compare",
+            summary="Compare 2–4 weeks of a single project side-by-side")
+def project_compare(request: Request, code: str, weeks: str = ""):
+    from fastapi import HTTPException
+    from app.registry.projects import get_project_by_code
+
+    project = get_project_by_code(code)
+    if project is None:
+        raise HTTPException(404, f"Project {code!r} not found in registry")
+
+    available = _load_past_reports(project["id"], PAST_REPORTS_LIMIT)
+    available_weeks = [r["week_of"] for r in available]
+
+    selected = _parse_weeks_param(weeks)
+    if not selected:
+        # Default — last N weeks for which a report exists. Reverse so the
+        # display reads oldest-on-the-left, newest-on-the-right (chronological).
+        selected = list(reversed(available_weeks[:COMPARE_DEFAULT_COLUMNS]))
+    selected = selected[:COMPARE_MAX_COLUMNS]
+
+    columns = []
+    for w in selected:
+        report = _load_report(project["id"], week_of=w)
+        status = _load_status_at_week(project["id"], w)
+        highlights = _extract_highlights_section(report["content_markdown"]) if report else None
+        columns.append({
+            "week_of": w,
+            "report": report,
+            "status": status,
+            "highlights": highlights,
+        })
+
+    return templates.TemplateResponse(
+        request=request,
+        name="compare.html",
+        context={
+            "project": project,
+            "available_weeks": available_weeks,
+            "selected": selected,
+            "columns": columns,
+            "max_columns": COMPARE_MAX_COLUMNS,
+        },
+    )
+
+
 @router.get("/projects/{code}/jira-activity",
             summary="Recent JIRA activity (htmx fragment)")
 def project_jira_activity(request: Request, code: str):
