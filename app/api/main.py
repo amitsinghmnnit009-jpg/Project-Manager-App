@@ -85,4 +85,15 @@ def health():
     }
 
 
-# TODO Step 11: include_router(projects_router), reports_router, status_router, admin_router
+# Step 11 — wire all the public + admin routers. Order doesn't matter for
+# routing (each has a distinct prefix), but we register projects first so
+# OpenAPI/Swagger groups them in a sensible order.
+from app.api.projects import router as projects_router
+from app.api.status import router as status_router
+from app.api.reports import router as reports_router
+from app.api.admin import router as admin_router
+
+app.include_router(projects_router)
+app.include_router(status_router)
+app.include_router(reports_router)
+app.include_router(admin_router)

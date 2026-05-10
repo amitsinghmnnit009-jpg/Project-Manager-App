@@ -102,7 +102,8 @@ Project-Manager-App/
     ├── test_highlights_prompt.py           # 16 — splice, strip, regex, render
     ├── test_status_engine.py               # 11
     ├── test_scheduler.py                   # 27 — job registration (incl. reminders) + lifecycle + safe wrappers
-    └── test_notifications.py               # 12 — send + pre/post orchestration + mock JSONL
+    ├── test_notifications.py               # 12 — send + pre/post orchestration + mock JSONL
+    └── test_api.py                         # 25 — public REST API + admin endpoints (FastAPI TestClient)
 ```
 
 ---
@@ -267,6 +268,61 @@ python manage.py show-last-reminders                      # see what would have 
 
 ---
 
+## REST API surface (Step 11)
+
+When the server is running (`python manage.py serve`), the following endpoints are available. **No authentication in Phase 1** (per NFR — relies on office-network perimeter). Auto-generated OpenAPI docs at `http://127.0.0.1:8000/docs`.
+
+### Public — projects, status, reports
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/health` | server + version + LLM provider + project count |
+| GET | `/api/projects` | List all projects (summary view) |
+| GET | `/api/projects/{code}` | Single project full detail |
+| GET | `/api/projects/{code}/tasks` | Currently active JIRA tasks (ID + title + URL) |
+| GET | `/api/projects/{code}/status` | Latest computed status (Green/Amber/Red, schedule, completion%, milestones, rationale, confidence) |
+| GET | `/api/projects/{code}/status/history?limit=N` | Status-change timeline (newest first; only changes are recorded) |
+| POST | `/api/projects/{code}/status/refresh` | Trigger immediate Status Engine recompute |
+| GET | `/api/projects/{code}/reports?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N` | List weekly reports (summary; newest first) |
+| GET | `/api/projects/{code}/reports/latest` | Most recent weekly report (full markdown) |
+| GET | `/api/projects/{code}/reports/{week_of}` | Specific week's weekly report (full markdown) |
+| POST | `/api/projects/{code}/reports/{week_of}/regenerate` | Trigger Aggregation Engine for that week |
+| POST | `/api/projects/{code}/reports/{week_of}/highlights/refresh` | Trigger Highlights Engine for that week |
+
+### Admin — read-only observability
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/admin/config` | Safe subset of runtime config (no tokens / API keys) |
+| GET | `/admin/logs/ai-computes?project_code=&limit=N` | Recent LLM compute log entries |
+| GET | `/admin/logs/reminders?project_code=&limit=N` | Recent mock-sent reminder emails |
+| GET | `/admin/logs/sync?source=jira\|confluence&limit=N` | Recent JIRA/Confluence sync log entries |
+| GET | `/admin/scheduler/jobs` | Currently registered APScheduler jobs (with next run times) |
+
+### Quick examples
+
+```bash
+# List all projects
+curl http://127.0.0.1:8000/api/projects
+
+# Get current status of one project
+curl http://127.0.0.1:8000/api/projects/MAICTJ/status
+
+# Trigger an immediate status recompute
+curl -X POST http://127.0.0.1:8000/api/projects/MAICTJ/status/refresh
+
+# Get this Monday's weekly report
+curl http://127.0.0.1:8000/api/projects/MAICTJ/reports/2026-05-04
+
+# See what's scheduled
+curl http://127.0.0.1:8000/admin/scheduler/jobs
+
+# Recent AI compute history (most recent first)
+curl http://127.0.0.1:8000/admin/logs/ai-computes?limit=10
+```
+
+The interactive Swagger UI at `/docs` exposes every endpoint with try-it-now forms — convenient for ad-hoc PGM-style exploration without building a UI.
+
+---
+
 ## Diagnostic logs
 
 All structured JSONL under `logs/`. Three categories:
@@ -287,7 +343,7 @@ Both gated logs default ON during stabilisation. Once Phase 1 is stable, flip to
 ## Test
 
 ```bash
-pytest -v                          # all ~190 tests
+pytest -v                          # all ~215 tests
 pytest tests/test_smoke.py -v      # smoke check only
 pytest tests/test_scheduler.py -v  # one suite
 pytest -k highlights -v            # filter by keyword
@@ -309,5 +365,5 @@ pytest -k highlights -v            # filter by keyword
 | 8 | Status Engine (Prompt 3 wrapped) | ✅ — `run_status_compute()` + persistence; 11 tests with mocked LLM/JIRA/Confluence |
 | 9 | Scheduler | ✅ — APScheduler in FastAPI lifespan; per-project daily status job + weekly aggregation→highlights pipeline (cutoff + offset); idempotent start/stop; misfire grace; scheduler-status CLI; ~20 tests |
 | 10 | Notifications (mocked SMTP) | ✅ — `send_engineer_reminder()` writes to `logs/sent_emails.jsonl` + `ReminderLog` DB; orchestrators `run_pre_cutoff_reminders()` (all engineers) + `run_post_cutoff_reminders()` (only those missing JIRA activity); scheduler fires both per project per week (cutoff ± hours); `run-reminders` + `show-last-reminders` CLIs; ~25 tests |
-| 11 | API routes | ⬜ |
+| 11 | API routes | ✅ — Public REST API: `/api/projects` (list/detail/tasks), `/api/projects/{code}/status` (current/history/refresh), `/api/projects/{code}/reports` (list/latest/by-week/regenerate/highlights-refresh), `/admin/{config,logs/{ai-computes,reminders,sync},scheduler/jobs}`; ~25 tests via FastAPI TestClient |
 | 12 | End-to-end test on one real project | ⬜ |
