@@ -1,0 +1,136 @@
+{# Log-table fragment. Three layouts depending on log_type. Used both
+   inline on /admin and as the htmx tab-swap target.
+   Wraps in <div id="log-container-inner"> so "Show N more" can swap the
+   inner content while keeping the outer container stable. #}
+<div id="log-container-inner" class="w-full">
+
+{% if rows %}
+
+  {% if log_type == "ai-computes" %}
+  <table class="w-full text-sm">
+    <thead class="bg-slate-50 text-slate-600 text-left text-xs uppercase tracking-wide">
+      <tr>
+        <th class="px-3 py-1.5 font-medium">Started</th>
+        <th class="px-3 py-1.5 font-medium">Project</th>
+        <th class="px-3 py-1.5 font-medium">Prompt</th>
+        <th class="px-3 py-1.5 font-medium">LLM</th>
+        <th class="px-3 py-1.5 font-medium">OK?</th>
+        <th class="px-3 py-1.5 font-medium">Result / error</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for r in rows %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-3 py-1.5 text-xs text-slate-500 font-mono">
+          {{ r.started_at.isoformat() if r.started_at else "—" }}
+        </td>
+        <td class="px-3 py-1.5 font-mono text-slate-900">{{ r.project_code }}</td>
+        <td class="px-3 py-1.5 text-slate-700">
+          {{ r.prompt_name }}
+          <span class="text-xs text-slate-400">{{ r.prompt_version }}</span>
+        </td>
+        <td class="px-3 py-1.5 text-xs text-slate-500">{{ r.llm_mode }}</td>
+        <td class="px-3 py-1.5 text-xs">
+          {% if r.success_flag %}
+          <span class="text-green-700">OK</span>
+          {% else %}
+          <span class="text-red-700">FAIL</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-1.5 text-xs text-slate-600 max-w-xl truncate">
+          {% if r.error_text %}<span class="text-red-700">{{ r.error_text }}</span>
+          {% else %}{{ r.response_excerpt }}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% elif log_type == "reminders" %}
+  <table class="w-full text-sm">
+    <thead class="bg-slate-50 text-slate-600 text-left text-xs uppercase tracking-wide">
+      <tr>
+        <th class="px-3 py-1.5 font-medium">Sent</th>
+        <th class="px-3 py-1.5 font-medium">Engineer</th>
+        <th class="px-3 py-1.5 font-medium">Project</th>
+        <th class="px-3 py-1.5 font-medium">Week of</th>
+        <th class="px-3 py-1.5 font-medium">Type</th>
+        <th class="px-3 py-1.5 font-medium">Channel</th>
+        <th class="px-3 py-1.5 font-medium">Status</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for r in rows %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-3 py-1.5 text-xs text-slate-500 font-mono">
+          {{ r.sent_at.isoformat() if r.sent_at else "—" }}
+        </td>
+        <td class="px-3 py-1.5 font-mono text-slate-900">
+          {{ r.engineer_knox_id }}
+          {% if r.engineer_name %}<span class="text-xs text-slate-500">({{ r.engineer_name }})</span>{% endif %}
+        </td>
+        <td class="px-3 py-1.5 font-mono text-slate-700">{{ r.project_code }}</td>
+        <td class="px-3 py-1.5 text-xs text-slate-500">{{ r.week_of }}</td>
+        <td class="px-3 py-1.5 text-xs text-slate-700">{{ r.type }}</td>
+        <td class="px-3 py-1.5 text-xs text-slate-500">{{ r.channel or "—" }}</td>
+        <td class="px-3 py-1.5 text-xs">{{ r.status or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% elif log_type == "sync" %}
+  <table class="w-full text-sm">
+    <thead class="bg-slate-50 text-slate-600 text-left text-xs uppercase tracking-wide">
+      <tr>
+        <th class="px-3 py-1.5 font-medium">Started</th>
+        <th class="px-3 py-1.5 font-medium">Source</th>
+        <th class="px-3 py-1.5 font-medium">Project</th>
+        <th class="px-3 py-1.5 font-medium">OK?</th>
+        <th class="px-3 py-1.5 font-medium">Error</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for r in rows %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-3 py-1.5 text-xs text-slate-500 font-mono">
+          {{ r.started_at.isoformat() if r.started_at else "—" }}
+        </td>
+        <td class="px-3 py-1.5 text-slate-700">{{ r.source }}</td>
+        <td class="px-3 py-1.5 font-mono text-slate-700">{{ r.project_code }}</td>
+        <td class="px-3 py-1.5 text-xs">
+          {% if r.success_flag %}<span class="text-green-700">OK</span>
+          {% else %}<span class="text-red-700">FAIL</span>{% endif %}
+        </td>
+        <td class="px-3 py-1.5 text-xs text-red-700 max-w-xl truncate">
+          {{ r.error_text or "" }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {# Show-more — increments limit by page_size and swaps the inner container. #}
+  <div class="px-4 py-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+    <span>{{ rows|length }} row{{ "s" if rows|length != 1 else "" }} (limit {{ limit }})</span>
+    {% if rows|length >= limit %}
+    <button
+      hx-get="/admin/logs/{{ log_type }}/fragment?limit={{ limit + page_size }}"
+      hx-target="#log-container-inner"
+      hx-swap="outerHTML"
+      hx-indicator="#log-spinner"
+      class="px-2 py-1 rounded text-xs font-medium border border-slate-300 bg-white
+             text-slate-700 hover:bg-slate-50">
+      Show {{ page_size }} more →
+    </button>
+    {% endif %}
+  </div>
+
+{% else %}
+  <div class="px-4 py-6 text-center text-sm text-slate-500">
+    No {{ log_type }} log entries yet.
+  </div>
+{% endif %}
+
+</div>

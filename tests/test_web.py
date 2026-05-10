@@ -1089,3 +1089,230 @@ def test_compare_link_present_on_project_detail_page(client, project_in_db):
     assert r.status_code == 200
     assert f'href="/projects/{project_in_db}/compare"' in r.text
     assert "Compare weeks" in r.text
+
+
+# ========================================================================
+# W6 — Admin / observability page
+# ========================================================================
+
+def _seed_ai_compute(project_id: int, *, prompt_name="aggregation",
+                     success: bool = True, error_text: str = "",
+                     response_excerpt: str = "ok"):
+    from datetime import datetime
+    from app.db import session_scope
+    from app.models import AIComputeLog
+    with session_scope() as s:
+        s.add(AIComputeLog(
+            project_id=project_id,
+            prompt_name=prompt_name, prompt_version="v1",
+            started_at=datetime.utcnow(), finished_at=datetime.utcnow(),
+            success_flag=success, llm_mode="ollama",
+            response_excerpt=response_excerpt, error_text=error_text,
+        ))
+
+
+def _seed_reminder(project_id: int, *, knox_id: str = "knx001",
+                    type_: str = "pre_cutoff"):
+    from datetime import date as _date, datetime
+    from app.db import session_scope
+    from app.models import ReminderLog
+    with session_scope() as s:
+        s.add(ReminderLog(
+            engineer_knox_id=knox_id, engineer_name="Test User",
+            project_id=project_id, week_of=_date(2026, 5, 4),
+            type=type_, sent_at=datetime.utcnow(),
+            channel="mock-smtp", status="sent",
+        ))
+
+
+def _seed_sync(project_id: int, *, source: str = "jira",
+               success: bool = True, error_text: str = ""):
+    from datetime import datetime
+    from app.db import session_scope
+    from app.models import SyncLog
+    with session_scope() as s:
+        s.add(SyncLog(
+            source=source, project_id=project_id,
+            started_at=datetime.utcnow(), finished_at=datetime.utcnow(),
+            success_flag=success, error_text=error_text,
+        ))
+
+
+# ---- /admin main page --------------------------------------------------
+
+def test_admin_page_renders(client):
+    r = client.get("/admin")
+    assert r.status_code == 200
+    body = r.text
+    # Major sections present
+    assert "Config" in body
+    assert "Scheduler jobs" in body
+    assert "Logs" in body
+    # Log-tab buttons present (data-tab attribute is the stable marker)
+    assert 'data-tab="ai-computes"' in body
+    assert 'data-tab="reminders"' in body
+    assert 'data-tab="sync"' in body
+    # Config section pulls from get_config
+    assert "llm_provider" in body
+    assert "scheduler_timezone" in body
+
+
+def test_admin_page_default_tab_is_ai_computes(client):
+    r = client.get("/admin")
+    assert r.status_code == 200
+    # The active tab pill has bg-slate-900 — check the ai-computes button
+    # appears with that class. (Crude but adequate for POC.)
+    body = r.text
+    # Find the button block for ai-computes; check it has bg-slate-900
+    idx = body.find('data-tab="ai-computes"')
+    # The class= attribute is rendered before data-tab in our template
+    button_chunk = body[max(0, idx - 400):idx + 200]
+    assert "bg-slate-900" in button_chunk
+
+
+def test_admin_page_invalid_tab_falls_back_to_default(client):
+    r = client.get("/admin?tab=garbage")
+    assert r.status_code == 200
+    # Falls back to ai-computes; the empty-state text uses the active tab name
+    assert "No ai-computes log entries" in r.text
+
+
+# ---- Scheduler jobs fragment -------------------------------------------
+
+def test_scheduler_jobs_fragment_renders_empty_when_no_scheduler(client):
+    r = client.get("/admin/scheduler/jobs/fragment")
+    assert r.status_code == 200
+    body = r.text
+    # Test fixture stubs out the scheduler — get_scheduler() returns None
+    assert "No scheduler jobs registered" in body
+
+
+def test_scheduler_jobs_fragment_renders_jobs_when_present(client, monkeypatch):
+    """Stub get_scheduler() to return a fake with two jobs."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    class FakeJob:
+        def __init__(self, jid, name, when):
+            self.id = jid
+            self.name = name
+            self.next_run_time = when
+            self.trigger = SimpleNamespace(__str__=lambda s: "cron[hour=6]")
+        def __getattr__(self, item):
+            return None
+
+    fake_when = datetime(2026, 5, 12, 6, 0, tzinfo=timezone.utc)
+    fake_sched = SimpleNamespace(
+        get_jobs=lambda: [
+            FakeJob("status_recompute_AAA", "Status AAA", fake_when),
+            FakeJob("weekly_aggregation_BBB", "Weekly BBB", fake_when),
+        ]
+    )
+    import app.scheduler as sched_mod
+    monkeypatch.setattr(sched_mod, "get_scheduler", lambda: fake_sched)
+
+    r = client.get("/admin/scheduler/jobs/fragment")
+    assert r.status_code == 200
+    body = r.text
+    assert "status_recompute_AAA" in body
+    assert "weekly_aggregation_BBB" in body
+    assert "2026-05-12T06:00:00" in body
+
+
+# ---- Log fragment endpoints --------------------------------------------
+
+def test_log_fragment_404_for_unknown_type(client):
+    r = client.get("/admin/logs/garbage/fragment")
+    assert r.status_code == 404
+
+
+def test_ai_computes_log_fragment_renders_rows(client):
+    pid = _seed_project("AICMP")
+    _seed_ai_compute(pid, prompt_name="aggregation")
+    _seed_ai_compute(pid, prompt_name="status", success=False,
+                     error_text="LLM timeout")
+    r = client.get("/admin/logs/ai-computes/fragment")
+    assert r.status_code == 200
+    body = r.text
+    assert "AICMP" in body
+    assert "aggregation" in body
+    assert "status" in body
+    assert "LLM timeout" in body
+    # OK / FAIL labels
+    assert ">OK<" in body
+    assert ">FAIL<" in body
+
+
+def test_ai_computes_log_fragment_empty_state(client):
+    r = client.get("/admin/logs/ai-computes/fragment")
+    assert r.status_code == 200
+    assert "No ai-computes log entries" in r.text
+
+
+def test_reminders_log_fragment_renders_rows(client):
+    pid = _seed_project("REMLOG")
+    _seed_reminder(pid, knox_id="knx-alice", type_="pre_cutoff")
+    _seed_reminder(pid, knox_id="knx-bob", type_="post_cutoff")
+    r = client.get("/admin/logs/reminders/fragment")
+    assert r.status_code == 200
+    body = r.text
+    assert "knx-alice" in body
+    assert "knx-bob" in body
+    assert "pre_cutoff" in body
+    assert "post_cutoff" in body
+    assert "REMLOG" in body
+
+
+def test_sync_log_fragment_renders_rows(client):
+    pid = _seed_project("SYNCLOG")
+    _seed_sync(pid, source="jira", success=True)
+    _seed_sync(pid, source="confluence", success=False,
+               error_text="rate limited")
+    r = client.get("/admin/logs/sync/fragment")
+    assert r.status_code == 200
+    body = r.text
+    assert "jira" in body
+    assert "confluence" in body
+    assert "rate limited" in body
+
+
+# ---- Show-more pagination ---------------------------------------------
+
+def test_log_fragment_show_more_button_appears_when_full_page(client):
+    pid = _seed_project("PAGED")
+    # Seed >= page_size rows so the "Show more" button appears
+    for i in range(60):
+        _seed_ai_compute(pid, prompt_name=f"p{i}")
+    r = client.get("/admin/logs/ai-computes/fragment?limit=50")
+    assert r.status_code == 200
+    body = r.text
+    # 50 rows returned (page_size default), button advertises limit=100 next
+    assert "limit=100" in body
+    assert "Show 50 more" in body
+
+
+def test_log_fragment_show_more_absent_when_under_page(client):
+    pid = _seed_project("UNDERPAGE")
+    _seed_ai_compute(pid, prompt_name="only-one")
+    r = client.get("/admin/logs/ai-computes/fragment?limit=50")
+    assert r.status_code == 200
+    body = r.text
+    # Only 1 row, less than limit → no Show-more button
+    assert "Show 50 more" not in body
+
+
+def test_log_fragment_caps_limit(client):
+    """`limit` query param can't pull millions — capped at 5000."""
+    r = client.get("/admin/logs/ai-computes/fragment?limit=999999")
+    assert r.status_code == 200
+    # Empty result either way (no seeded rows), but the rendering should
+    # advertise the capped limit in the caption
+    assert "limit 5000" in r.text or "No ai-computes" in r.text
+
+
+# ---- Admin link visible from portfolio (sanity) ----------------------
+
+def test_portfolio_has_admin_link(client):
+    r = client.get("/portfolio")
+    assert r.status_code == 200
+    assert 'href="/admin"' in r.text

@@ -564,6 +564,209 @@ def project_compare(request: Request, code: str, weeks: str = ""):
     )
 
 
+# ========================================================================
+# W6 — Admin / observability page
+# ========================================================================
+
+# Default rows per log fragment + "Show N more" increment.
+ADMIN_LOG_PAGE_SIZE = 50
+
+# Allowed log-tab values; validated at the route to prevent template lookup
+# of arbitrary fragments.
+ADMIN_LOG_TYPES = ("ai-computes", "reminders", "sync")
+
+
+def _load_admin_config_safe() -> dict:
+    """Subset of runtime config that's safe to display (no tokens / keys).
+    Mirrors the AdminConfigSafe pydantic model in app/api/schemas.py."""
+    from app.config import get_config
+    cfg = get_config()
+    return {
+        "llm_provider": cfg.llm.provider,
+        "llm_temperature": cfg.llm.temperature,
+        "jira_base_url": cfg.jira.base_url,
+        "jira_api_version": cfg.jira.api_version,
+        "confluence_base_url": cfg.confluence.base_url,
+        "database_url": cfg.database.url,
+        "logging_directory": cfg.logging.directory,
+        "logging_level": cfg.logging.level,
+        "scheduler_status_recompute_cadence": cfg.scheduler.status_recompute_cadence,
+        "scheduler_daily_status_hour": cfg.scheduler.daily_status_hour,
+        "scheduler_weekly_aggregation_offset_minutes": cfg.scheduler.weekly_aggregation_offset_minutes,
+        "scheduler_timezone": cfg.scheduler.timezone,
+        "scheduler_misfire_grace_seconds": cfg.scheduler.misfire_grace_seconds,
+        "reminders_hours_before_cutoff": cfg.reminders.hours_before_cutoff,
+        "reminders_hours_after_cutoff": cfg.reminders.hours_after_cutoff,
+        "reports_retention_weeks": cfg.reports.retention_weeks,
+        "api_host": cfg.api.host,
+        "api_port": cfg.api.port,
+        "project_count": len(cfg.projects),
+    }
+
+
+def _load_scheduler_jobs() -> list[dict]:
+    """Currently registered APScheduler jobs (snapshotted dicts).
+    Returns [] when the scheduler isn't running (e.g. test mode)."""
+    from app.config import get_config
+    from app.scheduler import get_scheduler
+
+    sched = get_scheduler()
+    if sched is None:
+        return []
+
+    cfg = get_config()
+    import pytz
+    tz = pytz.timezone(cfg.scheduler.timezone)
+    now = datetime.now(tz)
+
+    out: list[dict] = []
+    for job in sched.get_jobs():
+        next_run = (
+            getattr(job, "next_run_time", None)
+            or getattr(job, "next_fire_time", None)
+        )
+        if next_run is None:
+            try:
+                next_run = job.trigger.get_next_fire_time(None, now)
+            except Exception:
+                next_run = None
+        out.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run": next_run,
+            "trigger": str(job.trigger),
+        })
+    return sorted(out, key=lambda j: j["id"])
+
+
+def _load_admin_log_rows(log_type: str, limit: int) -> list[dict]:
+    """Snapshot of the most recent N rows from one of the admin log tables.
+    Returns dicts (not ORM instances) so the template doesn't access
+    detached SQLAlchemy state."""
+    from app.db import session_scope
+    from app.models import AIComputeLog, Project, ReminderLog, SyncLog
+
+    with session_scope() as s:
+        if log_type == "ai-computes":
+            rows = s.execute(
+                select(AIComputeLog, Project.code)
+                .join(Project, Project.id == AIComputeLog.project_id, isouter=True)
+                .order_by(AIComputeLog.started_at.desc())
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": row[0].id,
+                    "project_code": row[1] or "—",
+                    "prompt_name": row[0].prompt_name,
+                    "prompt_version": row[0].prompt_version,
+                    "started_at": row[0].started_at,
+                    "finished_at": row[0].finished_at,
+                    "success_flag": row[0].success_flag,
+                    "llm_mode": row[0].llm_mode,
+                    "response_excerpt": (row[0].response_excerpt or "")[:160],
+                    "error_text": (row[0].error_text or "")[:160],
+                }
+                for row in rows
+            ]
+        if log_type == "reminders":
+            rows = s.execute(
+                select(ReminderLog, Project.code)
+                .join(Project, Project.id == ReminderLog.project_id, isouter=True)
+                .order_by(ReminderLog.sent_at.desc())
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": row[0].id,
+                    "engineer_knox_id": row[0].engineer_knox_id,
+                    "engineer_name": row[0].engineer_name or "",
+                    "project_code": row[1] or "—",
+                    "week_of": row[0].week_of,
+                    "type": row[0].type,
+                    "sent_at": row[0].sent_at,
+                    "channel": row[0].channel or "",
+                    "status": row[0].status or "",
+                }
+                for row in rows
+            ]
+        if log_type == "sync":
+            rows = s.execute(
+                select(SyncLog, Project.code)
+                .join(Project, Project.id == SyncLog.project_id, isouter=True)
+                .order_by(SyncLog.started_at.desc())
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": row[0].id,
+                    "source": row[0].source,
+                    "project_code": row[1] or "—",
+                    "started_at": row[0].started_at,
+                    "finished_at": row[0].finished_at,
+                    "success_flag": row[0].success_flag,
+                    "error_text": (row[0].error_text or "")[:160],
+                }
+                for row in rows
+            ]
+        return []
+
+
+@router.get("/admin", summary="Admin / observability page")
+def admin_page(request: Request, tab: str = "ai-computes"):
+    if tab not in ADMIN_LOG_TYPES:
+        tab = "ai-computes"
+    return templates.TemplateResponse(
+        request=request,
+        name="admin.html",
+        context={
+            "config": _load_admin_config_safe(),
+            "jobs": _load_scheduler_jobs(),
+            "active_tab": tab,
+            "log_types": ADMIN_LOG_TYPES,
+            # The log_table partial reads log_type / rows / limit / page_size
+            # from the parent context — keep names aligned with the fragment
+            # route so the same partial works for inline render and htmx swap.
+            "log_type": tab,
+            "rows": _load_admin_log_rows(tab, ADMIN_LOG_PAGE_SIZE),
+            "limit": ADMIN_LOG_PAGE_SIZE,
+            "page_size": ADMIN_LOG_PAGE_SIZE,
+        },
+    )
+
+
+@router.get("/admin/scheduler/jobs/fragment",
+            summary="Scheduler jobs table fragment (auto-refresh target)")
+def admin_scheduler_jobs_fragment(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/scheduler_jobs.html",
+        context={"jobs": _load_scheduler_jobs()},
+    )
+
+
+@router.get("/admin/logs/{log_type}/fragment",
+            summary="Log table fragment (parametrized by type, paginated)")
+def admin_log_fragment(request: Request, log_type: str,
+                       limit: int = ADMIN_LOG_PAGE_SIZE):
+    from fastapi import HTTPException
+    if log_type not in ADMIN_LOG_TYPES:
+        raise HTTPException(404, f"Unknown log type {log_type!r}")
+    # Cap to a sane upper bound so a malicious / typo'd `limit` query param
+    # can't pull millions of rows.
+    limit = max(1, min(limit, 5000))
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/log_table.html",
+        context={
+            "log_type": log_type,
+            "rows": _load_admin_log_rows(log_type, limit),
+            "limit": limit,
+            "page_size": ADMIN_LOG_PAGE_SIZE,
+        },
+    )
+
+
 @router.get("/projects/{code}/jira-activity",
             summary="Recent JIRA activity (htmx fragment)")
 def project_jira_activity(request: Request, code: str):

@@ -1,0 +1,35 @@
+{# Scheduler jobs table fragment. Lives both inline on /admin and as the
+   target of the hx-trigger="every 60s" auto-refresh. #}
+{% if jobs %}
+<table class="w-full text-sm">
+  <thead class="bg-slate-50 text-slate-600 text-left text-xs uppercase tracking-wide">
+    <tr>
+      <th class="px-4 py-1.5 font-medium">Job ID</th>
+      <th class="px-4 py-1.5 font-medium">Name</th>
+      <th class="px-4 py-1.5 font-medium">Next run</th>
+      <th class="px-4 py-1.5 font-medium">Trigger</th>
+    </tr>
+  </thead>
+  <tbody class="divide-y divide-slate-100">
+    {% for j in jobs %}
+    <tr class="hover:bg-slate-50">
+      <td class="px-4 py-1.5 font-mono text-slate-900">{{ j.id }}</td>
+      <td class="px-4 py-1.5 text-slate-700">{{ j.name }}</td>
+      <td class="px-4 py-1.5 text-slate-600">
+        {% if j.next_run %}{{ j.next_run.isoformat() }}
+        {% else %}<span class="text-slate-400 italic">—</span>
+        {% endif %}
+      </td>
+      <td class="px-4 py-1.5 text-xs text-slate-500 font-mono">{{ j.trigger }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="px-4 py-6 text-center text-sm text-slate-500">
+  No scheduler jobs registered.
+  <span class="text-xs text-slate-400 block mt-1">
+    (Either the scheduler isn't running, or no projects are configured.)
+  </span>
+</div>
+{% endif %}
