@@ -171,3 +171,164 @@ def portfolio_refresh_all():
         status_code=204,
         headers={"HX-Refresh": "true"},
     )
+
+
+# ========================================================================
+# W3 — Project detail page
+# ========================================================================
+
+# Number of trailing status-history points to render in the sparkline.
+SPARKLINE_POINTS = 8
+
+
+def _load_status_history(project_id: int, limit: int) -> list[dict]:
+    """Latest N ProjectStatusHistory rows, oldest-first for left-to-right
+    sparkline rendering. Snapshots fields before session closes."""
+    from app.db import session_scope
+    from app.models import ProjectStatusHistory
+
+    with session_scope() as s:
+        rows = s.execute(
+            select(ProjectStatusHistory)
+            .where(ProjectStatusHistory.project_id == project_id)
+            .order_by(ProjectStatusHistory.computed_at.desc())
+            .limit(limit)
+        ).scalars().all()
+        snapshot = [
+            {
+                "computed_at": r.computed_at,
+                "new_health": r.new_health,
+                "new_schedule": r.new_schedule,
+                "new_completion_pct": r.new_completion_pct,
+            }
+            for r in rows
+        ]
+    snapshot.reverse()  # oldest first → left edge of sparkline
+    return snapshot
+
+
+def _load_status(project_id: int) -> Optional[dict]:
+    """Latest ProjectStatus row for a project (None if never computed)."""
+    from app.db import session_scope
+    from app.models import ProjectStatus
+
+    with session_scope() as s:
+        row = s.execute(
+            select(ProjectStatus).where(ProjectStatus.project_id == project_id)
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        return {
+            "overall_health": row.overall_health,
+            "schedule_status": row.schedule_status,
+            "completion_pct": row.completion_pct,
+            "confidence": row.confidence,
+            "rationale": row.rationale or "",
+            "computed_at": row.computed_at,
+            "milestones": list(row.milestones_json or []),
+            "prompt_version": row.prompt_version or "",
+            "llm_mode_used": row.llm_mode_used or "",
+        }
+
+
+@router.get("/projects/{code}", summary="Project detail")
+def project_detail(request: Request, code: str):
+    from fastapi import HTTPException
+    from app.registry.projects import get_project_by_code
+
+    project = get_project_by_code(code)
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project {code!r} not found in registry",
+        )
+
+    status = _load_status(project["id"])
+    history = _load_status_history(project["id"], SPARKLINE_POINTS)
+    is_stale = _is_stale(status["computed_at"]) if status else False
+
+    return templates.TemplateResponse(
+        request=request,
+        name="project_detail.html",
+        context={
+            "project": project,
+            "status": status,
+            "history": history,
+            "is_stale": is_stale,
+            "stale_threshold_days": STALE_THRESHOLD_DAYS,
+        },
+    )
+
+
+@router.get("/projects/{code}/jira-activity",
+            summary="Recent JIRA activity (htmx fragment)")
+def project_jira_activity(request: Request, code: str):
+    """Lazy-loaded fragment — kept off the main page render path so a slow
+    or down JIRA doesn't block the project detail page from appearing.
+    """
+    from fastapi import HTTPException
+    from app.registry.projects import get_project_by_code
+
+    project = get_project_by_code(code)
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project {code!r} not found in registry",
+        )
+
+    activity_rows: list[dict] = []
+    error: Optional[str] = None
+    jira_base: str = ""
+    try:
+        from app.clients import get_jira_client
+        client = get_jira_client()
+        snap = client.get_project_snapshot(
+            project["jira_project_key"], project.get("issue_types") or None,
+        )
+        jira_base = (client.base or "").rstrip("/")
+        for r in (snap.recent_activity or []):
+            activity_rows.append({
+                "id": r["id"],
+                "title": r["title"],
+                "status": r["status"],
+                "last_activity": r.get("last_activity"),
+                "url": f"{jira_base}/browse/{r['id']}" if jira_base else "",
+            })
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/jira_activity.html",
+        context={
+            "project": project,
+            "rows": activity_rows,
+            "error": error,
+        },
+    )
+
+
+@router.post("/projects/{code}/refresh-status",
+             summary="Trigger Status Engine for a single project")
+def project_refresh_status(code: str):
+    """Same compute as POST /api/projects/{code}/status/refresh, but returns
+    HX-Refresh so htmx reloads the project detail page.
+    """
+    from fastapi import HTTPException
+    from app.engines.status import run_status_compute
+    from app.registry.projects import get_project_by_code
+
+    if get_project_by_code(code) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project {code!r} not found in registry",
+        )
+
+    try:
+        run_status_compute(code)
+    except Exception:
+        # Same swallow-and-continue pattern as refresh-all. Errors are still
+        # captured in AIComputeLog + system.jsonl.
+        pass
+
+    return Response(status_code=204, headers={"HX-Refresh": "true"})

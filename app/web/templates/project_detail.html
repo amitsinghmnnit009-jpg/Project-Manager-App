@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% from "_macros.html" import health_badge, schedule_text, confidence_text, stale_badge, completion_pct, fmt_dt, tl_status_badge, ai_verification_badge, sparkline %}
+
+{% block title %}{{ project.code }} — {{ project.name }}{% endblock %}
+
+{% block content %}
+<section class="space-y-6">
+
+  {# ----- Back link + page header -------------------------------------- #}
+  <div>
+    <a href="/portfolio" class="text-sm text-slate-500 hover:text-slate-700">&larr; Portfolio</a>
+  </div>
+
+  <div class="flex items-center justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-semibold text-slate-900">
+        <span class="font-mono">{{ project.code }}</span>
+        <span class="text-slate-500 font-normal">— {{ project.name }}</span>
+      </h1>
+      <p class="text-sm text-slate-500 mt-1">
+        Type: <span class="text-slate-700">{{ project.type or "general" }}</span>
+        &nbsp;·&nbsp; Owning TL: <span class="text-slate-700">{{ project.owning_tl or "—" }}</span>
+        &nbsp;·&nbsp; PGM: <span class="text-slate-700">{{ project.owning_pgm or "—" }}</span>
+        &nbsp;·&nbsp; Cutoff: <span class="text-slate-700">{{ project.weekly_cutoff or "Mon 13:00" }}</span>
+        {% if project.planned_end_date %}
+        &nbsp;·&nbsp; Planned end: <span class="text-slate-700">{{ project.planned_end_date }}</span>
+        {% endif %}
+      </p>
+    </div>
+  </div>
+
+  {# ----- Current status card ----------------------------------------- #}
+  <div class="bg-white border border-slate-200 rounded-md overflow-hidden">
+    <div class="px-4 py-2 border-b border-slate-200 flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-slate-900">Current status</h2>
+      <div class="flex items-center gap-3">
+        {% if status %}
+          <span class="text-xs text-slate-500">
+            computed {{ fmt_dt(status.computed_at) }}{{ stale_badge(is_stale, stale_threshold_days) }}
+          </span>
+        {% endif %}
+        <span id="refresh-status-spinner"
+              class="htmx-indicator text-xs text-slate-500 italic">
+          recomputing…
+        </span>
+        <button
+          hx-post="/projects/{{ project.code }}/refresh-status"
+          hx-disabled-elt="this"
+          hx-indicator="#refresh-status-spinner"
+          class="px-2 py-1 rounded text-xs font-medium bg-slate-900 text-white
+                 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed">
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    {% if status %}
+    <div class="p-4 space-y-3">
+      <div class="flex items-center gap-4 flex-wrap">
+        {{ health_badge(status.overall_health) }}
+        <span class="text-sm">Schedule: {{ schedule_text(status.schedule_status) }}</span>
+        <span class="text-sm">Completion: <strong>{{ completion_pct(status.completion_pct) }}</strong></span>
+        {{ confidence_text(status.confidence) }}
+      </div>
+
+      {% if status.rationale %}
+      <p class="text-sm text-slate-700 leading-relaxed whitespace-pre-line">
+        {{ status.rationale }}
+      </p>
+      {% endif %}
+
+      {% if status.milestones %}
+      <div class="pt-2">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Milestones</h3>
+        <table class="w-full text-sm border border-slate-200 rounded">
+          <thead class="bg-slate-50 text-slate-600 text-left text-xs uppercase">
+            <tr>
+              <th class="px-3 py-1.5 font-medium">Name</th>
+              <th class="px-3 py-1.5 font-medium">Planned</th>
+              <th class="px-3 py-1.5 font-medium">TL declared</th>
+              <th class="px-3 py-1.5 font-medium">AI verification</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            {% for m in status.milestones %}
+            <tr>
+              <td class="px-3 py-1.5">{{ m.name or "—" }}</td>
+              <td class="px-3 py-1.5 text-slate-600">{{ m.planned_date or "—" }}</td>
+              <td class="px-3 py-1.5">{{ tl_status_badge(m.tl_declared_status) }}</td>
+              <td class="px-3 py-1.5">{{ ai_verification_badge(m.ai_verification) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+
+      <p class="text-[11px] text-slate-400 pt-1">
+        prompt {{ status.prompt_version or "?" }} · LLM {{ status.llm_mode_used or "?" }}
+      </p>
+    </div>
+    {% else %}
+    <div class="p-6 text-center text-sm text-slate-500">
+      Status hasn't been computed yet for this project. Click <strong>Refresh</strong>
+      above to run the Status Engine now (~5–10s).
+    </div>
+    {% endif %}
+  </div>
+
+  {# ----- Status history sparkline ------------------------------------ #}
+  <div class="bg-white border border-slate-200 rounded-md p-4">
+    <h2 class="text-sm font-semibold text-slate-900 mb-2">
+      Completion-% trend
+      <span class="text-xs text-slate-500 font-normal">
+        (last {{ history|length }} status change{{ "s" if history|length != 1 else "" }})
+      </span>
+    </h2>
+    {{ sparkline(history) }}
+  </div>
+
+  {# ----- Recent JIRA activity (lazy-loaded fragment) ----------------- #}
+  <div class="bg-white border border-slate-200 rounded-md overflow-hidden">
+    <div class="px-4 py-2 border-b border-slate-200 flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-slate-900">
+        Recent JIRA activity
+        <span class="text-xs text-slate-500 font-normal">(last 14 days, capped at 30)</span>
+      </h2>
+    </div>
+    <div hx-get="/projects/{{ project.code }}/jira-activity"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <div class="px-4 py-6 text-center text-sm text-slate-400 italic">
+        Loading from JIRA…
+      </div>
+    </div>
+  </div>
+
+</section>
+{% endblock %}

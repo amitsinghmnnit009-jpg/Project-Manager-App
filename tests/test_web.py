@@ -373,3 +373,241 @@ def test_refresh_button_absent_when_no_projects(client):
     r = client.get("/portfolio")
     assert r.status_code == 200
     assert 'hx-post="/portfolio/refresh-all"' not in r.text
+
+
+# ========================================================================
+# W3 — Project detail page
+# ========================================================================
+
+def _seed_status_history(project_id: int, points: list[tuple[str, int]]):
+    """points = list of (computed_at_iso, completion_pct) tuples, oldest first."""
+    from datetime import datetime
+    from app.db import session_scope
+    from app.models import ProjectStatusHistory
+    with session_scope() as s:
+        for ts_iso, pct in points:
+            s.add(ProjectStatusHistory(
+                project_id=project_id,
+                computed_at=datetime.fromisoformat(ts_iso),
+                prior_health="Amber", new_health="Green",
+                prior_schedule="AtRisk", new_schedule="OnTrack",
+                prior_completion_pct=max(0, pct - 5), new_completion_pct=pct,
+                rationale="test", prompt_version="test",
+            ))
+
+
+# ---- Route + 404 -------------------------------------------------------
+
+def test_project_detail_renders_with_code_and_name(client, project_in_db):
+    r = client.get(f"/projects/{project_in_db}")
+    assert r.status_code == 200
+    body = r.text
+    assert "WEBTEST" in body
+    assert "Web Test Project" in body
+    # Header chrome present
+    assert "← Portfolio" in body or "Portfolio" in body
+
+
+def test_project_detail_404_for_unknown_code(client):
+    r = client.get("/projects/DOES_NOT_EXIST")
+    assert r.status_code == 404
+
+
+# ---- Status card -------------------------------------------------------
+
+def test_project_detail_renders_status_card_when_status_exists(client, project_in_db):
+    pid = _seed_project("WITHSTAT", "With Status")
+    _seed_status(pid, health="Green", schedule="OnTrack", completion=72,
+                 confidence="High", rationale="All on track for the milestone.")
+    r = client.get("/projects/WITHSTAT")
+    assert r.status_code == 200
+    body = r.text
+    assert "All on track for the milestone." in body
+    assert "72%" in body
+    assert "Green" in body
+
+
+def test_project_detail_shows_not_yet_computed_when_no_status(client, project_in_db):
+    r = client.get(f"/projects/{project_in_db}")
+    assert r.status_code == 200
+    assert "hasn't been computed yet" in r.text
+
+
+def test_project_detail_renders_milestones(client):
+    pid = _seed_project("WITHMS", "With Milestones")
+    from datetime import datetime
+    from app.db import session_scope
+    from app.models import ProjectStatus
+    with session_scope() as s:
+        s.add(ProjectStatus(
+            project_id=pid, computed_at=datetime.utcnow(),
+            overall_health="Amber", schedule_status="AtRisk",
+            completion_pct=55, confidence="Medium",
+            rationale="Two milestones in flight.",
+            milestones_json=[
+                {"name": "M1 Design freeze", "planned_date": "2026-04-15",
+                 "tl_declared_status": "Done", "ai_verification": "Verified",
+                 "evidence": "..."},
+                {"name": "M2 Build complete", "planned_date": "2026-05-20",
+                 "tl_declared_status": "In-progress", "ai_verification": "NotApplicable",
+                 "evidence": "..."},
+            ],
+            prompt_version="test", llm_mode_used="test",
+        ))
+    r = client.get("/projects/WITHMS")
+    assert r.status_code == 200
+    body = r.text
+    assert "M1 Design freeze" in body
+    assert "M2 Build complete" in body
+    assert "AI: Verified" in body
+
+
+# ---- Sparkline ---------------------------------------------------------
+
+def test_sparkline_renders_svg_when_history_exists(client):
+    pid = _seed_project("WITHHIST", "With History")
+    _seed_status_history(pid, [
+        ("2026-04-01T10:00:00", 30),
+        ("2026-04-08T10:00:00", 45),
+        ("2026-04-15T10:00:00", 60),
+        ("2026-04-22T10:00:00", 72),
+    ])
+    r = client.get("/projects/WITHHIST")
+    assert r.status_code == 200
+    body = r.text
+    # Inline SVG present
+    assert "<svg" in body
+    assert "polyline" in body
+    # "latest" caption shows the most recent value
+    assert "latest 72%" in body
+
+
+def test_sparkline_shows_placeholder_when_no_history(client, project_in_db):
+    r = client.get(f"/projects/{project_in_db}")
+    assert r.status_code == 200
+    assert "no completion-% history yet" in r.text
+
+
+def test_load_status_history_returns_oldest_first(client):
+    """Helper: history rows must be oldest-first for left→right sparkline."""
+    pid = _seed_project("ORDERTEST")
+    _seed_status_history(pid, [
+        ("2026-04-01T10:00:00", 10),
+        ("2026-04-08T10:00:00", 20),
+        ("2026-04-15T10:00:00", 30),
+    ])
+    from app.web.router import _load_status_history
+    rows = _load_status_history(pid, limit=8)
+    pcts = [r["new_completion_pct"] for r in rows]
+    assert pcts == [10, 20, 30]
+
+
+# ---- JIRA activity fragment -------------------------------------------
+
+def test_jira_activity_fragment_renders_rows(client, project_in_db, monkeypatch):
+    from types import SimpleNamespace
+
+    class StubJira:
+        base = "https://jira.test.local"
+        def get_project_snapshot(self, key, types=None):
+            return SimpleNamespace(
+                recent_activity=[
+                    {"id": "WEBTESTKEY-101", "title": "Implement X",
+                     "status": "In Progress",
+                     "last_activity": "2026-05-09T10:00:00+05:30"},
+                    {"id": "WEBTESTKEY-102", "title": "Fix Y",
+                     "status": "Done",
+                     "last_activity": "2026-05-08T10:00:00+05:30"},
+                ],
+            )
+    import app.clients
+    monkeypatch.setattr(app.clients, "get_jira_client", lambda: StubJira())
+
+    r = client.get(f"/projects/{project_in_db}/jira-activity")
+    assert r.status_code == 200
+    body = r.text
+    assert "WEBTESTKEY-101" in body
+    assert "Implement X" in body
+    assert "WEBTESTKEY-102" in body
+    assert 'href="https://jira.test.local/browse/WEBTESTKEY-101"' in body
+
+
+def test_jira_activity_fragment_handles_jira_failure_gracefully(
+        client, project_in_db, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("JIRA unreachable")
+    import app.clients
+    class BoomJira:
+        base = "https://jira.test.local"
+        def get_project_snapshot(self, key, types=None):
+            raise RuntimeError("JIRA unreachable")
+    monkeypatch.setattr(app.clients, "get_jira_client", lambda: BoomJira())
+
+    r = client.get(f"/projects/{project_in_db}/jira-activity")
+    # Endpoint returns 200 — error rendered inline so the page survives
+    assert r.status_code == 200
+    body = r.text
+    assert "Couldn't load JIRA activity" in body
+    assert "JIRA unreachable" in body
+
+
+def test_jira_activity_fragment_404_for_unknown_project(client):
+    r = client.get("/projects/DOES_NOT_EXIST/jira-activity")
+    assert r.status_code == 404
+
+
+def test_jira_activity_fragment_empty_state(client, project_in_db, monkeypatch):
+    from types import SimpleNamespace
+
+    class StubJira:
+        base = "https://jira.test.local"
+        def get_project_snapshot(self, key, types=None):
+            return SimpleNamespace(recent_activity=[])
+    import app.clients
+    monkeypatch.setattr(app.clients, "get_jira_client", lambda: StubJira())
+
+    r = client.get(f"/projects/{project_in_db}/jira-activity")
+    assert r.status_code == 200
+    assert "No JIRA activity in the last 14 days" in r.text
+
+
+# ---- Per-project refresh-status endpoint -------------------------------
+
+def test_refresh_status_calls_run_status_compute(client, project_in_db, monkeypatch):
+    called: list[str] = []
+    def fake_compute(code: str):
+        called.append(code)
+        from types import SimpleNamespace
+        return SimpleNamespace(success=True, parsed={}, changed=False,
+                               duration_seconds=0.01, issues=[])
+    monkeypatch.setattr("app.engines.status.run_status_compute", fake_compute)
+
+    r = client.post(f"/projects/{project_in_db}/refresh-status")
+    assert r.status_code == 204
+    assert r.headers.get("hx-refresh") == "true"
+    assert called == [project_in_db]
+
+
+def test_refresh_status_404_for_unknown_project(client):
+    r = client.post("/projects/DOES_NOT_EXIST/refresh-status")
+    assert r.status_code == 404
+
+
+def test_refresh_status_swallows_engine_failure(client, project_in_db, monkeypatch):
+    def boom(code: str):
+        raise RuntimeError("LLM down")
+    monkeypatch.setattr("app.engines.status.run_status_compute", boom)
+    r = client.post(f"/projects/{project_in_db}/refresh-status")
+    # Still 204 — failure logged, page just reloads with stale data
+    assert r.status_code == 204
+    assert r.headers.get("hx-refresh") == "true"
+
+
+# ---- Project detail page wires the lazy JIRA loader -------------------
+
+def test_project_detail_page_includes_lazy_jira_loader(client, project_in_db):
+    r = client.get(f"/projects/{project_in_db}")
+    assert r.status_code == 200
+    body = r.text
+    assert f'hx-get="/projects/{project_in_db}/jira-activity"' in body
+    assert 'hx-trigger="load"' in body

@@ -62,3 +62,74 @@
   {% else %}<span class="text-slate-400">never</span>
   {% endif %}
 {%- endmacro %}
+
+{% macro tl_status_badge(value) -%}
+  {% set v = value or "Pending" %}
+  {% if v == "Done" %}
+    <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Done</span>
+  {% elif v == "In-progress" %}
+    <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">In progress</span>
+  {% elif v == "Delayed" %}
+    <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">Delayed</span>
+  {% elif v == "Blocked" %}
+    <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Blocked</span>
+  {% elif v == "Cancelled" %}
+    <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-700 line-through">Cancelled</span>
+  {% else %}
+    <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-700">{{ v }}</span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro ai_verification_badge(value) -%}
+  {% set v = value or "NotApplicable" %}
+  {% if v == "Verified" %}
+    <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-green-50 text-green-700 ring-1 ring-green-200" title="AI verified TL's Done declaration">AI: Verified</span>
+  {% elif v == "Disputed" %}
+    <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-red-700 ring-1 ring-red-200" title="AI disputes TL's Done declaration">AI: Disputed</span>
+  {% elif v == "Inconclusive" %}
+    <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 ring-1 ring-amber-200" title="AI couldn't determine — insufficient evidence">AI: Inconclusive</span>
+  {% else %}
+    {# NotApplicable — non-Done milestones; AI must not verify (asymmetric trust). #}
+    <span class="text-xs text-slate-400">—</span>
+  {% endif %}
+{%- endmacro %}
+
+{# Inline-SVG sparkline. `points` is a list of dicts with new_completion_pct. #}
+{% macro sparkline(points, width=160, height=36) -%}
+  {% set vals = [] %}
+  {% for p in points %}
+    {% if p.new_completion_pct is not none %}
+      {% set _ = vals.append(p.new_completion_pct) %}
+    {% endif %}
+  {% endfor %}
+  {% if vals|length == 0 %}
+    <span class="text-xs text-slate-400 italic">no completion-% history yet</span>
+  {% else %}
+    <svg width="{{ width }}" height="{{ height }}" viewBox="0 0 {{ width }} {{ height }}"
+         class="inline-block align-middle">
+      {%- set n = vals|length -%}
+      {%- set step = (width - 8) / (n - 1) if n > 1 else 0 -%}
+      {%- set max_v = 100 -%}
+      {%- set min_v = 0 -%}
+      {%- set h_inner = height - 8 -%}
+      {%- set coords = [] -%}
+      {%- for v in vals -%}
+        {%- set x = 4 + step * loop.index0 -%}
+        {%- set y = 4 + h_inner - (h_inner * (v - min_v) / (max_v - min_v)) -%}
+        {%- set _ = coords.append("%.1f,%.1f"|format(x, y)) -%}
+      {%- endfor -%}
+      {%- if n > 1 %}
+      <polyline fill="none" stroke="#0f172a" stroke-width="1.5"
+                points="{{ coords|join(' ') }}" />
+      {%- endif %}
+      {# Final point as a filled dot so a single-point series is still visible. #}
+      {%- set last_x = 4 + step * (n - 1) -%}
+      {%- set last_y = 4 + h_inner - (h_inner * (vals[-1] - min_v) / (max_v - min_v)) -%}
+      <circle cx="{{ "%.1f"|format(last_x) }}" cy="{{ "%.1f"|format(last_y) }}"
+              r="2.5" fill="#0f172a" />
+    </svg>
+    <span class="text-xs text-slate-500 ml-2">
+      latest {{ vals[-1] }}% · {{ vals|length }} pts
+    </span>
+  {% endif %}
+{%- endmacro %}
