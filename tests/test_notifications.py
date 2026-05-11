@@ -120,7 +120,8 @@ def _stub_jira(monkeypatch, *, by_engineer=None, raises=None):
     from app.clients.jira_client import JiraEngineerActivity
 
     class StubJira:
-        def collect_engineer_activity(self, key, week, engineers, types):
+        def collect_engineer_activity(self, key, week, engineers, types,
+                                      exclude_labels=None):
             if raises:
                 raise raises
             return JiraEngineerActivity(

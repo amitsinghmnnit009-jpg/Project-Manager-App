@@ -25,6 +25,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from app.clients import get_jira_client
+from app.config import get_config
 from app.db import session_scope
 from app.engines._aggregation_prompt import (
     PROMPT_FILE, PROMPT_VERSION,
@@ -36,6 +37,17 @@ from app.registry.engineers import engineers_on_project
 from app.registry.projects import get_project_by_code
 from app.utils.dates import week_of as compute_week_of
 from app.utils.logging import system_log
+
+
+def _project_backfill_config(project_code: str) -> tuple[str, list[str]]:
+    """Read (activity_date_field, exclude_labels) for a project from
+    config.json. Returns ("", []) if the project isn't in config (we hit
+    this in tests that seed the DB directly without populating config)."""
+    cfg = get_config()
+    for p in cfg.projects:
+        if p.code == project_code:
+            return p.activity_date_field or "", list(p.exclude_labels or [])
+    return "", []
 
 
 @dataclass
@@ -77,6 +89,7 @@ def run_weekly_aggregation(
     week_of: Optional[date] = None,
     *,
     regenerate: bool = False,
+    backfill_mode: bool = False,
 ) -> AggregationResult:
     """Run the weekly aggregation pipeline for one project for one week.
 
@@ -89,6 +102,15 @@ def run_weekly_aggregation(
                       is bumped (per FR §B.3.4). Kept in the signature for
                       future extensions (e.g. force a re-fetch from JIRA even
                       if cached) and so the CLI / scheduler can record intent.
+        backfill_mode: When True (used by `backfill-weekly` CLI), pull JIRA
+                       tickets by the configured `activity_date_field`
+                       (e.g. "Baseline end date") instead of by `updated`.
+                       Required for past weeks where JIRA's system timestamps
+                       all say "today" but you've manually set the activity
+                       date to the historical week. When False (default), the
+                       existing `updated >= week_of - 1d` JQL is used and
+                       any configured `exclude_labels` are appended to filter
+                       out retro-created tickets.
 
     Returns:
         AggregationResult — see dataclass docs.
@@ -140,15 +162,41 @@ def run_weekly_aggregation(
         )
 
     # ---- 3. Fetch JIRA activity ----------------------------------------
+    activity_date_field, exclude_labels = _project_backfill_config(project_code)
     try:
         jira = get_jira_client()
         engineers_dicts = [{"name": e.name, "knox_id": e.knox_id} for e in engineers]
-        activity = jira.collect_engineer_activity(
-            project["jira_project_key"],
-            week_of,
-            engineers_dicts,
-            project.get("issue_types") or None,
-        )
+        if backfill_mode:
+            if not activity_date_field:
+                result.error = (
+                    f"backfill_mode=True but project {project_code!r} has no "
+                    f"activity_date_field configured in config.json. "
+                    f"Add e.g. \"activity_date_field\": \"Baseline end date\" "
+                    f"to projects[] entry."
+                )
+                log.error("aggregation: backfill misconfigured",
+                          extra={"event": "aggregation_failed",
+                                 "project_code": project_code,
+                                 "stage": "backfill_config"})
+                _save_ai_compute_log(project_id, started_at, success=False,
+                                     llm_mode="", error_text=result.error,
+                                     response_excerpt="")
+                return result
+            activity = jira.collect_engineer_activity_for_backfill(
+                project["jira_project_key"],
+                activity_date_field,
+                week_of,
+                engineers_dicts,
+                project.get("issue_types") or None,
+            )
+        else:
+            activity = jira.collect_engineer_activity(
+                project["jira_project_key"],
+                week_of,
+                engineers_dicts,
+                project.get("issue_types") or None,
+                exclude_labels=exclude_labels or None,
+            )
     except Exception as e:
         result.error = f"JIRA activity fetch failed: {type(e).__name__}: {e}"
         log.error("aggregation: jira fetch failed",
@@ -270,7 +318,8 @@ def run_weekly_aggregation(
                "duration_seconds": result.duration_seconds,
                "prompt_tokens": result.prompt_tokens,
                "completion_tokens": result.completion_tokens,
-               "regenerate_intent": regenerate},
+               "regenerate_intent": regenerate,
+               "backfill_mode": backfill_mode},
     )
     return result
 

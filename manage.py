@@ -9,6 +9,8 @@ Usage:
     python manage.py run-status <project_code>           # Status Engine: compute + persist
     python manage.py run-aggregation <project_code>      # Aggregation Engine: weekly report (Step 6)
     python manage.py run-highlights <project_code>       # Highlights Engine: week-over-week (Step 7)
+    python manage.py probe-activity-field <project_code> [--week-of YYYY-MM-DD]      # Sanity-check Baseline-end-date JQL
+    python manage.py backfill-weekly <project_code> --from YYYY-MM-DD [--to YYYY-MM-DD] [--skip-highlights] [--dry-run]
     python manage.py run-reminders <project_code> [--type pre|post]   # Reminders (Step 10)
     python manage.py show-last-reminders [--hours N]     # Recent mock-sent emails
     python manage.py scheduler-status                    # List APScheduler jobs and next run times
@@ -290,6 +292,309 @@ def run_highlights(project_code, week_of):
     click.echo("")
     click.echo("=== Updated full report (with Highlights spliced in) ===")
     click.echo(result.content_markdown)
+
+
+# =====================================================================
+# Phase 2 backfill — probe-activity-field + backfill-weekly
+# =====================================================================
+
+@cli.command("probe-activity-field")
+@click.argument("project_code")
+@click.option("--week-of", default=None,
+              help="Monday of a sample week to probe (YYYY-MM-DD). "
+                   "Defaults to last Monday.")
+def probe_activity_field(project_code, week_of):
+    """Sanity-check the backfill activity-date field before bulk-backfilling.
+
+    Reads `activity_date_field` from config.json for the given project,
+    resolves it to the customfield_NNNNN ID, fires the backfill JQL
+    against your real JIRA for a single week, and prints the response
+    summary. Use this once after configuring activity_date_field, before
+    `backfill-weekly`, to catch typos / missing fields cleanly.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    from app.clients import get_jira_client
+    from app.config import get_config
+    from app.registry.projects import get_project_by_code
+
+    project = get_project_by_code(project_code)
+    if project is None:
+        click.echo(f"[FAIL] Project {project_code!r} not found in DB. "
+                   f"Run sync-projects first.", err=True)
+        sys.exit(1)
+
+    cfg = get_config()
+    pcfg = next((p for p in cfg.projects if p.code == project_code), None)
+    if pcfg is None:
+        click.echo(f"[FAIL] Project {project_code!r} not in config.json.", err=True)
+        sys.exit(1)
+    if not pcfg.activity_date_field:
+        click.echo(
+            f"[FAIL] Project {project_code!r} has no activity_date_field "
+            f"set in config.json. Add e.g. "
+            f"\"activity_date_field\": \"Baseline end date\"", err=True)
+        sys.exit(1)
+    field_name = pcfg.activity_date_field
+
+    # Resolve the week
+    if week_of:
+        try:
+            week_date = _dt.strptime(week_of, "%Y-%m-%d").date()
+        except ValueError as e:
+            click.echo(f"[FAIL] --week-of must be YYYY-MM-DD: {e}", err=True)
+            sys.exit(1)
+    else:
+        today = _dt.now().date()
+        # Last Monday (or today if today is Monday)
+        week_date = today - _td(days=today.weekday() or 7)
+
+    week_start = week_date
+    week_end = week_date + _td(days=6)
+
+    click.echo(f"Probing project={project_code!r} field={field_name!r} "
+               f"week=[{week_start}..{week_end}]")
+
+    jira = get_jira_client()
+
+    # Step 1 — resolve field name to ID
+    try:
+        field_id = jira.resolve_custom_field_id(field_name)
+    except Exception as e:
+        click.echo(f"[FAIL] Could not list JIRA fields: {type(e).__name__}: {e}",
+                   err=True)
+        click.echo("       Your JIRA may rate-limit /rest/api/2/field. JQL with "
+                   "the field name should still work — try `backfill-weekly --dry-run`.")
+        sys.exit(1)
+    if field_id is None:
+        click.echo(f"[FAIL] No JIRA field named {field_name!r} found on this "
+                   f"server. Check the spelling in config.json. "
+                   f"(Field lookup is case-insensitive.)", err=True)
+        sys.exit(1)
+    click.echo(f"[OK] Resolved {field_name!r} → {field_id}")
+
+    # Step 2 — fire the backfill JQL
+    try:
+        issues = jira.search_issues_by_activity_date(
+            project["jira_project_key"], field_name, week_start, week_end,
+            project.get("issue_types") or None,
+        )
+    except Exception as e:
+        click.echo(f"[FAIL] JQL failed: {type(e).__name__}: {e}", err=True)
+        click.echo(f"       JQL was: {getattr(jira, '_last_jql', '(unknown)')}")
+        sys.exit(1)
+    click.echo(f"[OK] JQL fired: {jira._last_jql}")
+    click.echo(f"[OK] Returned {len(issues)} ticket(s) in this week:")
+
+    # Step 3 — sample first ~10
+    for issue in issues[:10]:
+        key = issue.get("key", "?")
+        f = issue.get("fields", {})
+        summary = f.get("summary", "")[:60]
+        status = (f.get("status") or {}).get("name", "?")
+        date_value = f.get(field_id, "") or "(empty)"
+        labels = f.get("labels") or []
+        labels_str = f" labels={labels}" if labels else ""
+        click.echo(f"     {key}  [{status}]  {field_name}={date_value}{labels_str}")
+        click.echo(f"            {summary}")
+    if len(issues) > 10:
+        click.echo(f"     ... and {len(issues) - 10} more.")
+
+    click.echo("")
+    click.echo("[OK] Field appears wired correctly. Safe to run backfill-weekly.")
+
+
+@cli.command("backfill-weekly")
+@click.argument("project_code")
+@click.option("--from", "from_date", required=True,
+              help="First Monday to backfill (YYYY-MM-DD).")
+@click.option("--to", "to_date", default=None,
+              help="Last Monday to backfill (YYYY-MM-DD). "
+                   "Defaults to the Monday BEFORE the current week.")
+@click.option("--skip-highlights", is_flag=True, default=False,
+              help="Skip the Highlights pass per week (aggregation only). "
+                   "Faster — useful for the first sweep before reviewing data.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="List the Mondays that would be processed and ticket "
+                   "counts per week (one JIRA call per week), but do NOT "
+                   "run aggregation / call the LLM.")
+def backfill_weekly(project_code, from_date, to_date, skip_highlights, dry_run):
+    """Generate weekly reports + highlights for past weeks (Phase 2 follow-up).
+
+    Walks every Monday between --from and --to (inclusive). For each
+    Monday W:
+      1. Fires a JQL keyed off the project's `activity_date_field`
+         (e.g. "Baseline end date") for the week W..W+6.
+      2. Runs the Aggregation Engine (creates/updates WeeklyReport row).
+      3. Unless --skip-highlights, runs the Highlights Engine
+         (compares this week to the prior week's report).
+
+    Requires `activity_date_field` to be set in config.json for the project.
+    Run `probe-activity-field` first to verify the field is wired correctly.
+
+    Failures on individual weeks do NOT abort the loop — the summary at
+    the end lists which weeks succeeded / failed. Errors are also written
+    to AIComputeLog + system.jsonl as usual.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    import time as _time
+
+    # ---- Parse dates ----
+    try:
+        from_d = _dt.strptime(from_date, "%Y-%m-%d").date()
+    except ValueError as e:
+        click.echo(f"[FAIL] --from must be YYYY-MM-DD: {e}", err=True)
+        sys.exit(1)
+    if to_date:
+        try:
+            to_d = _dt.strptime(to_date, "%Y-%m-%d").date()
+        except ValueError as e:
+            click.echo(f"[FAIL] --to must be YYYY-MM-DD: {e}", err=True)
+            sys.exit(1)
+    else:
+        today = _dt.now().date()
+        # Monday before this week's Monday
+        this_monday = today - _td(days=today.weekday())
+        to_d = this_monday - _td(days=7)
+
+    if from_d > to_d:
+        click.echo(f"[FAIL] --from ({from_d}) is after --to ({to_d}).", err=True)
+        sys.exit(1)
+
+    # Snap to Mondays
+    if from_d.weekday() != 0:
+        adjusted = from_d - _td(days=from_d.weekday())
+        click.echo(f"[INFO] --from {from_d} is not a Monday — snapping back "
+                   f"to {adjusted}.")
+        from_d = adjusted
+    if to_d.weekday() != 0:
+        adjusted = to_d - _td(days=to_d.weekday())
+        click.echo(f"[INFO] --to {to_d} is not a Monday — snapping back "
+                   f"to {adjusted}.")
+        to_d = adjusted
+
+    weeks: list = []
+    cur = from_d
+    while cur <= to_d:
+        weeks.append(cur)
+        cur += _td(days=7)
+
+    click.echo(f"Backfilling {project_code} from {from_d} to {to_d} "
+               f"({len(weeks)} week(s))")
+    if dry_run:
+        click.echo("[DRY RUN] No aggregation / highlights / LLM calls will run.")
+
+    # ---- Pre-flight: verify config ----
+    from app.config import get_config
+    cfg = get_config()
+    pcfg = next((p for p in cfg.projects if p.code == project_code), None)
+    if pcfg is None:
+        click.echo(f"[FAIL] Project {project_code!r} not in config.json.", err=True)
+        sys.exit(1)
+    if not pcfg.activity_date_field:
+        click.echo(
+            f"[FAIL] Project {project_code!r} has no activity_date_field set in "
+            f"config.json. Add it before running backfill.", err=True)
+        sys.exit(1)
+    click.echo(f"[OK] Using field {pcfg.activity_date_field!r} from config.json")
+
+    # ---- Walk weeks ----
+    from app.clients import get_jira_client
+    from app.engines.aggregation import run_weekly_aggregation
+    from app.engines.highlights import run_highlights
+    from app.registry.projects import get_project_by_code
+
+    project = get_project_by_code(project_code)
+    if project is None:
+        click.echo(f"[FAIL] Project {project_code!r} not found in DB. "
+                   f"Run sync-projects first.", err=True)
+        sys.exit(1)
+
+    summary: list = []  # (week, agg_ok, hl_ok, ticket_count, total_seconds, note)
+    overall_start = _time.time()
+
+    for idx, week in enumerate(weeks, start=1):
+        click.echo(f"\n[{idx}/{len(weeks)}] Week of {week}", nl=False)
+        week_start = _time.time()
+
+        # Quick JIRA count for the week (used in dry-run + summary)
+        try:
+            jira = get_jira_client()
+            tickets = jira.search_issues_by_activity_date(
+                project["jira_project_key"], pcfg.activity_date_field,
+                week, week + _td(days=6),
+                project.get("issue_types") or None,
+            )
+            ticket_count = len(tickets)
+        except Exception as e:
+            click.echo(f"  [FAIL] JIRA fetch error: {type(e).__name__}: {e}")
+            summary.append((week, False, False, 0, 0.0, f"jira_error: {e}"))
+            continue
+        click.echo(f"  {ticket_count} ticket(s) in this week", nl=False)
+
+        if dry_run:
+            click.echo("  [DRY RUN — skipping aggregation]")
+            summary.append((week, None, None, ticket_count, 0.0, "dry_run"))
+            continue
+
+        if ticket_count == 0:
+            click.echo("  [SKIP] no tickets matched the JQL")
+            summary.append((week, None, None, 0, 0.0, "skipped_empty"))
+            continue
+
+        # Aggregation
+        agg_t0 = _time.time()
+        agg_result = run_weekly_aggregation(
+            project_code, week_of=week, regenerate=True, backfill_mode=True,
+        )
+        agg_seconds = _time.time() - agg_t0
+        if agg_result.success:
+            click.echo(f"  agg [OK] {agg_seconds:.1f}s", nl=False)
+        else:
+            click.echo(f"  agg [FAIL] {agg_seconds:.1f}s — {agg_result.error}")
+            summary.append((week, False, False, ticket_count, agg_seconds,
+                            f"agg_failed: {agg_result.error[:80]}"))
+            continue
+
+        # Highlights (unless skipped)
+        if skip_highlights:
+            click.echo("  hl [SKIP]")
+            summary.append((week, True, None, ticket_count, agg_seconds, "hl_skipped"))
+            continue
+        hl_t0 = _time.time()
+        hl_result = run_highlights(project_code, week_of=week)
+        hl_seconds = _time.time() - hl_t0
+        if hl_result.success:
+            click.echo(f"  hl [OK] {hl_seconds:.1f}s")
+            summary.append((week, True, True, ticket_count,
+                            agg_seconds + hl_seconds, ""))
+        else:
+            click.echo(f"  hl [FAIL] {hl_seconds:.1f}s — {hl_result.error}")
+            summary.append((week, True, False, ticket_count,
+                            agg_seconds + hl_seconds,
+                            f"hl_failed: {hl_result.error[:80]}"))
+
+    overall_seconds = _time.time() - overall_start
+
+    # ---- Summary ----
+    click.echo("\n" + "=" * 64)
+    click.echo("Summary")
+    click.echo("=" * 64)
+    weeks_processed = len(summary)
+    weeks_with_data = sum(1 for r in summary if r[3] > 0 and r[5] != "dry_run")
+    weeks_skipped_empty = sum(1 for r in summary if r[5] == "skipped_empty")
+    weeks_failed = sum(1 for r in summary
+                       if (r[1] is False) or (r[2] is False))
+    click.echo(f"  Weeks processed: {weeks_processed}")
+    click.echo(f"  Weeks with data: {weeks_with_data}")
+    click.echo(f"  Weeks skipped:   {weeks_skipped_empty}  (no tickets matched)")
+    click.echo(f"  Failures:        {weeks_failed}")
+    click.echo(f"  Total time:      {overall_seconds:.1f}s")
+    if weeks_failed:
+        click.echo("\nFailed weeks:")
+        for r in summary:
+            if (r[1] is False) or (r[2] is False):
+                click.echo(f"     {r[0]}  {r[5]}")
+    sys.exit(0 if weeks_failed == 0 else 1)
 
 
 @cli.command("run-reminders")

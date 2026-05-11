@@ -153,7 +153,8 @@ def _stub_clients(monkeypatch, *,
     monkeypatch.setattr(agg_mod, "get_llm_client", lambda: StubLLM())
 
     class StubJira:
-        def collect_engineer_activity(self, project_key, week_of, engineers, issue_types=None):
+        def collect_engineer_activity(self, project_key, week_of, engineers,
+                                      issue_types=None, exclude_labels=None):
             if jira_raises:
                 raise jira_raises
             return jira_activity if jira_activity is not None else _make_jira_activity()
@@ -444,3 +445,134 @@ def test_aggregation_default_week_of_is_current_week(project_in_db, fake_enginee
     res = run_weekly_aggregation(project_in_db)
     assert res.success is True
     assert res.week_of == compute_week_of()
+
+
+# ========================================================================
+# Phase 2 backfill: backfill_mode + exclude_labels propagation
+# ========================================================================
+
+def _stub_clients_with_call_tracking(monkeypatch, *, jira_activity=None,
+                                     backfill_activity=None,
+                                     llm_response_text="## body\nstuff\n",
+                                     llm_mode="ollama"):
+    """Variant of _stub_clients that captures which JIRA method was called
+    and with what args. Returns the captured-calls dict for assertions."""
+    import app.engines.aggregation as agg_mod
+    calls: dict = {"normal": [], "backfill": []}
+
+    class StubLLM:
+        mode = llm_mode
+        def complete(self, sys_p, user_p, *, json_output=False, **kw):
+            return SimpleNamespace(
+                text=llm_response_text, model="stub-model",
+                duration_seconds=0.5, prompt_tokens=200, completion_tokens=100,
+            )
+    monkeypatch.setattr(agg_mod, "get_llm_client", lambda: StubLLM())
+
+    class StubJira:
+        def collect_engineer_activity(self, project_key, week_of, engineers,
+                                      issue_types=None, exclude_labels=None):
+            calls["normal"].append({
+                "project_key": project_key, "week_of": week_of,
+                "issue_types": issue_types, "exclude_labels": exclude_labels,
+            })
+            return jira_activity if jira_activity is not None else _make_jira_activity()
+
+        def collect_engineer_activity_for_backfill(
+            self, project_key, field_name, week_of, engineers, issue_types=None,
+        ):
+            calls["backfill"].append({
+                "project_key": project_key, "field_name": field_name,
+                "week_of": week_of, "issue_types": issue_types,
+            })
+            return backfill_activity if backfill_activity is not None else _make_jira_activity()
+
+    monkeypatch.setattr(agg_mod, "get_jira_client", lambda: StubJira())
+    return calls
+
+
+def _patch_project_config(monkeypatch, *,
+                          activity_date_field: str = "",
+                          exclude_labels: list = None):
+    """Make _project_backfill_config return controlled values without
+    touching real config.json."""
+    import app.engines.aggregation as agg_mod
+    monkeypatch.setattr(
+        agg_mod, "_project_backfill_config",
+        lambda code: (activity_date_field, list(exclude_labels or [])),
+    )
+
+
+def test_aggregation_normal_mode_calls_normal_jira_method(
+    project_in_db, fake_engineers, monkeypatch,
+):
+    calls = _stub_clients_with_call_tracking(monkeypatch)
+    _patch_project_config(monkeypatch)
+    from app.engines.aggregation import run_weekly_aggregation
+
+    res = run_weekly_aggregation(project_in_db, week_of=date(2026, 5, 4))
+    assert res.success is True
+    assert len(calls["normal"]) == 1
+    assert calls["backfill"] == []
+
+
+def test_aggregation_normal_mode_passes_exclude_labels(
+    project_in_db, fake_engineers, monkeypatch,
+):
+    calls = _stub_clients_with_call_tracking(monkeypatch)
+    _patch_project_config(monkeypatch, exclude_labels=["backfill", "ignore"])
+    from app.engines.aggregation import run_weekly_aggregation
+
+    res = run_weekly_aggregation(project_in_db, week_of=date(2026, 5, 4))
+    assert res.success is True
+    assert calls["normal"][0]["exclude_labels"] == ["backfill", "ignore"]
+
+
+def test_aggregation_normal_mode_passes_none_when_no_exclude_labels(
+    project_in_db, fake_engineers, monkeypatch,
+):
+    calls = _stub_clients_with_call_tracking(monkeypatch)
+    _patch_project_config(monkeypatch, exclude_labels=[])
+    from app.engines.aggregation import run_weekly_aggregation
+
+    run_weekly_aggregation(project_in_db, week_of=date(2026, 5, 4))
+    # Empty list collapses to None so we pass nothing to JIRA — no
+    # 'AND labels NOT IN ()' clause appears
+    assert calls["normal"][0]["exclude_labels"] is None
+
+
+def test_aggregation_backfill_mode_calls_backfill_jira_method(
+    project_in_db, fake_engineers, monkeypatch,
+):
+    calls = _stub_clients_with_call_tracking(monkeypatch)
+    _patch_project_config(monkeypatch, activity_date_field="Baseline end date")
+    from app.engines.aggregation import run_weekly_aggregation
+
+    res = run_weekly_aggregation(
+        project_in_db, week_of=date(2026, 2, 2), backfill_mode=True,
+    )
+    assert res.success is True
+    assert calls["normal"] == []
+    assert len(calls["backfill"]) == 1
+    assert calls["backfill"][0]["field_name"] == "Baseline end date"
+    assert calls["backfill"][0]["week_of"] == date(2026, 2, 2)
+
+
+def test_aggregation_backfill_mode_fails_when_no_activity_date_field(
+    project_in_db, fake_engineers, monkeypatch,
+):
+    """backfill_mode=True requires activity_date_field — fails fast otherwise."""
+    calls = _stub_clients_with_call_tracking(monkeypatch)
+    _patch_project_config(monkeypatch, activity_date_field="")
+    from app.engines.aggregation import run_weekly_aggregation
+    from app.models import WeeklyReport
+    from app.db import session_scope
+
+    res = run_weekly_aggregation(
+        project_in_db, week_of=date(2026, 2, 2), backfill_mode=True,
+    )
+    assert res.success is False
+    assert "activity_date_field" in res.error
+    assert calls["backfill"] == []   # never reached the JIRA call
+    with session_scope() as s:
+        assert s.execute(select(WeeklyReport)).scalars().all() == []

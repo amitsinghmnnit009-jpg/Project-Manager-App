@@ -228,7 +228,8 @@ def mock_externals(monkeypatch):
 
     class StubJira:
         base = "https://jira.example.local"
-        def collect_engineer_activity(self, key, week, engineers, types=None):
+        def collect_engineer_activity(self, key, week, engineers, types=None,
+                                      exclude_labels=None):
             return _make_activity(week)
         def get_project_snapshot(self, key, types=None):
             return JiraProjectSnapshot(
@@ -493,7 +494,8 @@ def test_e2e_post_cutoff_reminder_targets_only_missing(
         url="https://jira.example/browse/E2EKEY-1",
     )
     class StubJira:
-        def collect_engineer_activity(self, key, week, engineers, types=None):
+        def collect_engineer_activity(self, key, week, engineers, types=None,
+                                      exclude_labels=None):
             return JiraEngineerActivity(
                 project_key=key, week_of=week,
                 by_engineer={"alice.e": [rec]},

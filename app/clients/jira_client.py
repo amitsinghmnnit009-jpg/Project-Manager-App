@@ -169,6 +169,16 @@ def _truncate(text: str, n: int) -> str:
     return text if len(text) <= n else text[:n] + "…"
 
 
+def _escape_jql_value(value: str) -> str:
+    """Escape a string for safe inclusion in a JQL double-quoted literal.
+
+    JQL string literals escape `"` and `\\` with backslash. We don't permit
+    quotes or backslashes in label / field-name values used for JQL, but
+    escape defensively so an unexpected character never breaks the query.
+    """
+    return (value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
 # ---------- Client --------------------------------------------------------
 
 class JiraClient:
@@ -301,6 +311,7 @@ class JiraClient:
         issue_types: Optional[list[str]] = None,
         fields: Optional[str] = None,
         expand: Optional[str] = None,
+        exclude_labels: Optional[list[str]] = None,
     ) -> list[dict]:
         """Paginated JQL search. Default JQL: project = X AND updated >= since.
 
@@ -308,9 +319,18 @@ class JiraClient:
         the start of the day in the server's TZ, which has matched UI counts
         in practice. If TZ-edge discrepancies show up later, switch to
         minute-precision formatting.
+
+        When `exclude_labels` is non-empty, appends `AND labels NOT IN (...)`
+        to the JQL — used to filter out retro-created backfill tickets from
+        the normal weekly report (per the Phase 2 backfill follow-up).
+        Empty / None preserves the original JQL exactly.
         """
         since_str = since.strftime("%Y-%m-%d")
-        jql = f'project = "{project_key}" AND updated >= "{since_str}" ORDER BY updated DESC'
+        jql = f'project = "{project_key}" AND updated >= "{since_str}"'
+        if exclude_labels:
+            quoted = ", ".join(f'"{_escape_jql_value(l)}"' for l in exclude_labels)
+            jql += f" AND labels NOT IN ({quoted})"
+        jql += " ORDER BY updated DESC"
         self._last_jql = jql  # exposed for debug/CLI
 
         out: list[dict] = []
@@ -324,6 +344,122 @@ class JiraClient:
                     "startAt": start,
                     "maxResults": page,
                     "fields": fields or "summary,status,assignee,issuetype,created,updated,reporter,duedate",
+                    "expand": expand or "changelog",
+                },
+            )
+            issues = data.get("issues", [])
+            out.extend(issues)
+            if start + len(issues) >= data.get("total", 0) or not issues:
+                break
+            start += len(issues)
+
+        if issue_types:
+            out = [
+                i for i in out
+                if _matches_issue_types(
+                    (i.get("fields", {}).get("issuetype", {}) or {}).get("name", ""),
+                    issue_types,
+                )
+            ]
+        return out
+
+    # ---------- Custom-field resolver (used by backfill) -----------------
+
+    def resolve_custom_field_id(self, field_name: str) -> Optional[str]:
+        """Translate a JIRA field's human-readable name (e.g. 'Baseline end
+        date') to its internal customfield ID (e.g. 'customfield_10042').
+
+        Hits `/rest/api/2/field` once and caches the name→ID map on the
+        client instance (the field list rarely changes during a single
+        process). Returns None if no field with that name exists.
+
+        Comparison is case-insensitive and whitespace-tolerant — JIRA
+        labels are inconsistent across instances.
+        """
+        if not field_name:
+            return None
+        if not hasattr(self, "_field_name_to_id_cache"):
+            try:
+                fields = self._get("/rest/api/2/field")
+            except Exception:
+                self._field_name_to_id_cache = {}
+                raise
+            cache: dict[str, str] = {}
+            if isinstance(fields, list):
+                for f in fields:
+                    name = (f.get("name") or "").strip().lower()
+                    fid = f.get("id") or ""
+                    if name and fid:
+                        cache[name] = fid
+            self._field_name_to_id_cache = cache
+        return self._field_name_to_id_cache.get(field_name.strip().lower())
+
+    # ---------- Backfill search (Phase 2 follow-up) ---------------------
+
+    def search_issues_by_activity_date(
+        self,
+        project_key: str,
+        field_name: str,
+        week_start: date,
+        week_end: date,
+        issue_types: Optional[list[str]] = None,
+        fields: Optional[str] = None,
+        expand: Optional[str] = None,
+    ) -> list[dict]:
+        """Paginated JQL search keyed off a user-specified date field.
+
+        Used by the `backfill-weekly` CLI. The JQL is:
+
+            project = "<key>" AND "<field_name>" >= "<week_start>"
+                                 AND "<field_name>" <= "<week_end>"
+            ORDER BY "<field_name>" DESC
+
+        `field_name` is the JIRA field's display name (e.g. "Baseline end
+        date"). JQL resolves it server-side; we don't need the customfield
+        ID for the query itself, but we resolve it anyway and surface it
+        in `_last_field_id` for the probe CLI's diagnostic output.
+
+        Window is inclusive at both ends — JIRA date fields are date-only,
+        so a Monday-to-Sunday window is `>= Monday AND <= Sunday`.
+        """
+        if not field_name:
+            raise ValueError(
+                "search_issues_by_activity_date requires field_name "
+                "(set projects[].activity_date_field in config.json)"
+            )
+
+        # Defensive resolve — surfaces a clear error if the field name
+        # is typo'd before we send a 400-triggering JQL to JIRA.
+        try:
+            self._last_field_id = self.resolve_custom_field_id(field_name)
+        except Exception:
+            # The /field endpoint can be rate-limited / unreachable in some
+            # corporate setups; let the JQL still try (JIRA can resolve the
+            # name server-side) but no cached field ID is available.
+            self._last_field_id = None
+
+        ws = week_start.isoformat()
+        we = week_end.isoformat()
+        escaped = _escape_jql_value(field_name)
+        jql = (
+            f'project = "{project_key}" '
+            f'AND "{escaped}" >= "{ws}" '
+            f'AND "{escaped}" <= "{we}" '
+            f'ORDER BY "{escaped}" DESC'
+        )
+        self._last_jql = jql
+
+        out: list[dict] = []
+        start = 0
+        page = 100
+        while True:
+            data = self._get(
+                f"{self.api}/search",
+                {
+                    "jql": jql,
+                    "startAt": start,
+                    "maxResults": page,
+                    "fields": fields or "summary,status,assignee,issuetype,created,updated,reporter,duedate,labels",
                     "expand": expand or "changelog",
                 },
             )
@@ -363,6 +499,7 @@ class JiraClient:
         week_of: date,
         engineers: list[dict],     # list of {"name": ..., "knox_id": ...}
         issue_types: Optional[list[str]] = None,
+        exclude_labels: Optional[list[str]] = None,
     ) -> JiraEngineerActivity:
         """Collect comments + work-logs + status changes authored by mapped
         engineers within the report week (Mon..Sun starting from `week_of`).
@@ -370,6 +507,11 @@ class JiraClient:
         Returns a structured grouping by engineer (knox_id → records).
         Unmapped JIRA users encountered are captured separately so admin can
         be warned (per FR §14).
+
+        `exclude_labels` (Phase 2 backfill follow-up): when non-empty, tickets
+        carrying any of these labels are filtered out at the JIRA server via
+        `AND labels NOT IN (...)`. Used to keep retro-created backfill tickets
+        out of the current week's report. Default None = no exclusion.
         """
         log = sync_log()
         sys = system_log()
@@ -408,7 +550,10 @@ class JiraClient:
         )
 
         try:
-            issues = self.search_issues_in_project(project_key, since, issue_types)
+            issues = self.search_issues_in_project(
+                project_key, since, issue_types,
+                exclude_labels=exclude_labels,
+            )
         except requests.HTTPError as e:
             log.error("jira search failed", extra={"project": project_key, "error": str(e)})
             raise
@@ -588,6 +733,174 @@ class JiraClient:
                 "issues_scanned": len(issues),
                 "engineers_with_activity": len(result.by_engineer),
                 "unmapped_authors": len(result.unmapped_authors),
+            },
+        )
+        return result
+
+    # ---------- engineer activity for BACKFILL (Phase 2 follow-up) ------
+
+    def collect_engineer_activity_for_backfill(
+        self,
+        project_key: str,
+        field_name: str,
+        week_of: date,
+        engineers: list[dict],
+        issue_types: Optional[list[str]] = None,
+    ) -> JiraEngineerActivity:
+        """Backfill variant of `collect_engineer_activity`.
+
+        Difference from the normal flow: in backfill, tickets are created
+        retro-actively, so JIRA's `created` / `updated` / changelog
+        timestamps all sit at "today" (when you typed the data in), NOT
+        at the historical week the work belongs to. The normal flow would
+        filter every event out by its system timestamp.
+
+        Backfill is ticket-presence-driven instead of event-stream-driven:
+        for each ticket whose `field_name` (Baseline end date) falls in
+        the report week, we generate ONE synthetic ActivityRecord per
+        mapped engineer involved (assignee + reporter, deduplicated).
+        The record's timestamp is the value of `field_name` itself — that's
+        the only timestamp we trust for backfill data.
+
+        We do NOT walk changelog / comments / worklogs (those are all
+        from today and would corrupt the per-week assignment).
+        """
+        sys = system_log()
+
+        # Same robust normalisation + lookup as the normal flow.
+        def _norm(s: str) -> str:
+            if not s:
+                return ""
+            s = unicodedata.normalize("NFKC", s)
+            s = " ".join(s.split())
+            return s.lower()
+
+        lookup_by_knox: dict[str, dict] = {_norm(e["knox_id"]): e for e in engineers}
+        lookup_by_name: dict[str, dict] = {_norm(e["name"]): e for e in engineers}
+
+        week_start = week_of
+        week_end = week_of + timedelta(days=6)   # inclusive both ends
+
+        result = JiraEngineerActivity(project_key=project_key, week_of=week_of)
+        unmapped_seen: dict[str, UnmappedAuthor] = {}
+
+        sys.info(
+            "jira collect_engineer_activity_for_backfill start",
+            extra={"project": project_key, "week_of": str(week_of),
+                   "engineer_count": len(engineers), "field_name": field_name},
+        )
+
+        try:
+            issues = self.search_issues_by_activity_date(
+                project_key, field_name, week_start, week_end, issue_types,
+            )
+        except requests.HTTPError as e:
+            sync_log().error("jira backfill search failed",
+                             extra={"project": project_key, "error": str(e)})
+            raise
+
+        # Resolve the customfield ID so we can read the date value off each
+        # ticket. `search_issues_by_activity_date` caches the result on
+        # the client; this just reads the cache.
+        field_id = self._last_field_id  # may be None if /field endpoint blocked
+
+        def _classify(u: dict) -> tuple[Optional[str], str, str, list[str]]:
+            """Reused author classifier — matches the normal flow's logic."""
+            if not u:
+                return None, "", "", []
+            a_id = u.get("accountId") or u.get("key") or u.get("name") or ""
+            a_name = u.get("displayName") or u.get("name") or ""
+            attempts: list[str] = []
+            for fname, value in [
+                ("accountId", u.get("accountId")),
+                ("key", u.get("key")),
+                ("name", u.get("name")),
+                ("emailAddress", u.get("emailAddress")),
+            ]:
+                if not value:
+                    continue
+                normed = _norm(value)
+                attempts.append(f"{fname}={value!r} → knox_id_lookup({normed!r})")
+                e = lookup_by_knox.get(normed)
+                if e:
+                    return e["knox_id"], a_name, a_id, attempts
+            if a_name:
+                normed = _norm(a_name)
+                attempts.append(f"displayName={a_name!r} → name_lookup({normed!r})")
+                e = lookup_by_name.get(normed)
+                if e:
+                    return e["knox_id"], a_name, a_id, attempts
+            return None, a_name, a_id, attempts
+
+        def _add(knox: str, rec: ActivityRecord):
+            result.by_engineer.setdefault(knox, []).append(rec)
+
+        def _record_unmapped(name: str, uid: str, attempts: Optional[list[str]] = None):
+            key = uid or name
+            if key and key not in unmapped_seen:
+                unmapped_seen[key] = UnmappedAuthor(
+                    display_name=name, user_id=uid, email="",
+                    lookup_attempts=attempts or [],
+                )
+
+        for issue in issues:
+            key = issue["key"]
+            f = issue["fields"]
+            summary = f.get("summary", "")
+            status = (f.get("status") or {}).get("name", "")
+            assignee_obj = f.get("assignee") or {}
+            assignee_display = assignee_obj.get("displayName")
+            reporter_obj = f.get("reporter") or {}
+            url = f"{self.base}/browse/{key}"
+
+            # Read the activity-date value off the ticket. JIRA returns
+            # date-only fields as "YYYY-MM-DD" strings.
+            activity_date_value = ""
+            if field_id:
+                activity_date_value = f.get(field_id) or ""
+            # Fallback: best-effort scan for any customfield holding a
+            # YYYY-MM-DD string in the right window (rare — should never
+            # be needed if resolve_custom_field_id worked).
+            if not activity_date_value:
+                activity_date_value = str(week_of)
+
+            # Emit one synthetic ActivityRecord per mapped party.
+            seen_knox_for_this_ticket: set[str] = set()
+            for who_label, who_obj in (("assignee", assignee_obj),
+                                       ("reporter", reporter_obj)):
+                knox, name, uid, attempts = _classify(who_obj)
+                if knox:
+                    if knox in seen_knox_for_this_ticket:
+                        continue  # same person was both assignee + reporter
+                    seen_knox_for_this_ticket.add(knox)
+                    detail_parts = [f"backfilled ticket, status={status}"]
+                    if who_label == "reporter" and assignee_display:
+                        detail_parts.append(f"assignee={assignee_display}")
+                    _add(knox, ActivityRecord(
+                        task_id=key, task_title=summary, task_status=status,
+                        task_assignee=assignee_display,
+                        activity_kind="completed",
+                        author_name=name, author_id=uid,
+                        timestamp=activity_date_value,
+                        detail=" — ".join(detail_parts), url=url,
+                    ))
+                elif name or uid:
+                    _record_unmapped(name, uid, attempts=attempts)
+
+        result.unmapped_authors = list(unmapped_seen.values())
+        result.lookup_keys_knox = list(lookup_by_knox.keys())
+        result.lookup_keys_name = list(lookup_by_name.keys())
+
+        sys.info(
+            "jira collect_engineer_activity_for_backfill done",
+            extra={
+                "project": project_key,
+                "week_of": str(week_of),
+                "issues_scanned": len(issues),
+                "engineers_with_activity": len(result.by_engineer),
+                "unmapped_authors": len(result.unmapped_authors),
+                "field_name": field_name,
+                "field_id_resolved": field_id or "(unresolved)",
             },
         )
         return result

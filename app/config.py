@@ -165,6 +165,19 @@ class ProjectConfig(BaseModel):
     )
     chronic_threshold: int = 3
     holiday_calendar_id: str = "default"
+    # --- Backfill (Phase 2 follow-up) -------------------------------
+    # Name (NOT customfield_NNNNN ID) of the JIRA date field used as the
+    # source-of-truth for which week a ticket's work belongs to. Used by
+    # `backfill-weekly` CLI only. When empty, backfill is disabled for
+    # this project. Recommended: "Baseline end date".
+    activity_date_field: str = ""
+    # Labels whose tickets should be EXCLUDED from the normal weekly
+    # report's JQL — e.g. ["backfill"] so retro-created tickets don't
+    # leak into the current week. Server-side filter (JQL `labels NOT IN
+    # (...)`). Default empty list = no exclusion, identical to current
+    # behavior. Affects only the normal weekly path, NOT the backfill
+    # path (backfill uses its own JQL keyed off activity_date_field).
+    exclude_labels: list[str] = Field(default_factory=list)
 
 
 class AppConfig(BaseModel):

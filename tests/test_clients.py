@@ -364,6 +364,325 @@ def test_jira_search_filters_by_issue_type():
     assert "PROJ-2" not in keys
 
 
+# ---------- Phase 2 backfill: JQL construction --------------------
+
+@responses.activate
+def test_jira_search_appends_exclude_labels_clause():
+    """When exclude_labels is non-empty, JQL gains AND labels NOT IN (...)."""
+    captured: dict = {}
+
+    def _capture(request):
+        captured["jql"] = request.url
+        return (200, {}, '{"issues": [], "total": 0}')
+
+    responses.add_callback(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/search",
+        callback=_capture,
+        content_type="application/json",
+    )
+    from datetime import datetime
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    client.search_issues_in_project(
+        "PROJ", datetime(2026, 5, 1), exclude_labels=["backfill", "data-entry"],
+    )
+    assert "PROJ" in captured["jql"]
+    # URL-encoded — check the literal jql attribute on the client instead
+    assert 'labels NOT IN ("backfill", "data-entry")' in client._last_jql
+
+
+def test_jira_search_no_label_clause_when_exclude_labels_empty():
+    """exclude_labels=None or [] preserves the original JQL exactly."""
+    from datetime import datetime
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    # We don't need an actual HTTP roundtrip — just trigger the JQL build
+    # by mocking a no-op _get.
+    captured: list = []
+    def _stub_get(path, params=None):
+        captured.append(params.get("jql", ""))
+        return {"issues": [], "total": 0}
+    client._get = _stub_get  # type: ignore
+
+    client.search_issues_in_project("PROJ", datetime(2026, 5, 1))
+    assert "labels NOT IN" not in captured[0]
+
+    client.search_issues_in_project(
+        "PROJ", datetime(2026, 5, 1), exclude_labels=[]
+    )
+    assert "labels NOT IN" not in captured[1]
+
+    client.search_issues_in_project(
+        "PROJ", datetime(2026, 5, 1), exclude_labels=None
+    )
+    assert "labels NOT IN" not in captured[2]
+
+
+def test_jira_search_escapes_special_chars_in_exclude_labels():
+    """Label values with quotes/backslashes must not break the JQL string."""
+    from datetime import datetime
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    captured: list = []
+    def _stub_get(path, params=None):
+        captured.append(params.get("jql", ""))
+        return {"issues": [], "total": 0}
+    client._get = _stub_get  # type: ignore
+    client.search_issues_in_project(
+        "PROJ", datetime(2026, 5, 1),
+        exclude_labels=['bad"label', "back\\slash"],
+    )
+    jql = captured[0]
+    # Both special characters are properly escaped — JQL string isn't broken
+    assert 'bad\\"label' in jql
+    assert "back\\\\slash" in jql
+
+
+# ---------- Phase 2 backfill: resolve_custom_field_id ------------
+
+@responses.activate
+def test_resolve_custom_field_id_basic():
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/field",
+        json=[
+            {"id": "customfield_10042", "name": "Baseline end date"},
+            {"id": "customfield_10041", "name": "Baseline start date"},
+            {"id": "duedate", "name": "Due Date"},
+        ],
+        status=200,
+    )
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    assert client.resolve_custom_field_id("Baseline end date") == "customfield_10042"
+    # case + whitespace insensitive
+    assert client.resolve_custom_field_id("baseline END date") == "customfield_10042"
+    assert client.resolve_custom_field_id("  Baseline end date  ") == "customfield_10042"
+
+
+@responses.activate
+def test_resolve_custom_field_id_returns_none_when_absent():
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/field",
+        json=[{"id": "customfield_10001", "name": "Some Other Field"}],
+        status=200,
+    )
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    assert client.resolve_custom_field_id("Baseline end date") is None
+    assert client.resolve_custom_field_id("") is None
+    assert client.resolve_custom_field_id(None) is None  # type: ignore
+
+
+@responses.activate
+def test_resolve_custom_field_id_caches_after_first_call():
+    """Second call should NOT hit /rest/api/2/field again."""
+    call_count = {"n": 0}
+    def _cb(_request):
+        call_count["n"] += 1
+        return (200, {}, '[{"id": "customfield_10042", "name": "Baseline end date"}]')
+    responses.add_callback(
+        responses.GET, "https://jira.example.com/rest/api/2/field",
+        callback=_cb, content_type="application/json",
+    )
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    client.resolve_custom_field_id("Baseline end date")
+    client.resolve_custom_field_id("Baseline end date")
+    client.resolve_custom_field_id("anything else")
+    assert call_count["n"] == 1
+
+
+# ---------- Phase 2 backfill: search_issues_by_activity_date -----
+
+@responses.activate
+def test_search_by_activity_date_builds_correct_jql():
+    from datetime import date
+
+    captured: list = []
+    def _cb(request):
+        captured.append(request.url)
+        return (200, {}, '{"issues": [], "total": 0}')
+
+    responses.add(
+        responses.GET, "https://jira.example.com/rest/api/2/field",
+        json=[{"id": "customfield_10042", "name": "Baseline end date"}],
+        status=200,
+    )
+    responses.add_callback(
+        responses.GET, "https://jira.example.com/rest/api/2/search",
+        callback=_cb, content_type="application/json",
+    )
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    client.search_issues_by_activity_date(
+        "PROJ", "Baseline end date",
+        date(2026, 2, 2), date(2026, 2, 8),
+    )
+    # Field resolver was called, ID cached
+    assert client._last_field_id == "customfield_10042"
+    # JQL well-formed
+    jql = client._last_jql
+    assert 'project = "PROJ"' in jql
+    assert '"Baseline end date" >= "2026-02-02"' in jql
+    assert '"Baseline end date" <= "2026-02-08"' in jql
+
+
+def test_search_by_activity_date_requires_field_name():
+    from datetime import date
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    with pytest.raises(ValueError, match="field_name"):
+        client.search_issues_by_activity_date(
+            "PROJ", "", date(2026, 2, 2), date(2026, 2, 8),
+        )
+
+
+@responses.activate
+def test_search_by_activity_date_survives_field_endpoint_failure():
+    """If /rest/api/2/field is rate-limited, the search should still try
+    (JIRA can resolve the name server-side). _last_field_id ends up None."""
+    from datetime import date
+    responses.add(
+        responses.GET, "https://jira.example.com/rest/api/2/field",
+        status=429, json={"message": "Rate limit exceeded"},
+    )
+    responses.add(
+        responses.GET, "https://jira.example.com/rest/api/2/search",
+        json={"issues": [], "total": 0}, status=200,
+    )
+    client = JiraClient(
+        base_url="https://jira.example.com", token="tok", retry_total=0,
+    )
+    # Should not raise — falls back gracefully
+    client.search_issues_by_activity_date(
+        "PROJ", "Baseline end date",
+        date(2026, 2, 2), date(2026, 2, 8),
+    )
+    assert client._last_field_id is None
+    # JQL still uses the field name (JIRA resolves server-side)
+    assert '"Baseline end date"' in client._last_jql
+
+
+# ---------- Phase 2 backfill: collect_engineer_activity_for_backfill ----
+
+@responses.activate
+def test_collect_for_backfill_creates_synthetic_records_per_assignee():
+    """One ticket with Baseline end date in the window → one record
+    per mapped engineer involved (assignee + reporter, deduplicated)."""
+    from datetime import date
+    responses.add(
+        responses.GET, "https://jira.example.com/rest/api/2/field",
+        json=[{"id": "customfield_10042", "name": "Baseline end date"}],
+        status=200,
+    )
+    responses.add(
+        responses.GET, "https://jira.example.com/rest/api/2/search",
+        json={
+            "issues": [{
+                "key": "PROJ-501",
+                "fields": {
+                    "summary": "Implement IDM SAML flow",
+                    "status": {"name": "Done"},
+                    "issuetype": {"name": "Task"},
+                    "assignee": {"name": "rahul.k", "displayName": "Rahul Kumar"},
+                    "reporter": {"name": "rahul.k", "displayName": "Rahul Kumar"},
+                    "customfield_10042": "2026-02-06",
+                    "labels": ["backfill"],
+                },
+            }],
+            "total": 1,
+        },
+        status=200,
+    )
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    engineers = [{"name": "Rahul Kumar", "knox_id": "rahul.k"}]
+    activity = client.collect_engineer_activity_for_backfill(
+        "PROJ", "Baseline end date", date(2026, 2, 2), engineers,
+    )
+    assert "rahul.k" in activity.by_engineer
+    records = activity.by_engineer["rahul.k"]
+    # Single record (assignee == reporter dedup)
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.task_id == "PROJ-501"
+    assert rec.task_title == "Implement IDM SAML flow"
+    assert rec.task_status == "Done"
+    # Timestamp is the Baseline end date, NOT today
+    assert rec.timestamp == "2026-02-06"
+    assert rec.activity_kind == "completed"
+
+
+@responses.activate
+def test_collect_for_backfill_separate_assignee_and_reporter():
+    """Different people for assignee + reporter → two records, one each."""
+    from datetime import date
+    responses.add(
+        responses.GET, "https://jira.example.com/rest/api/2/field",
+        json=[{"id": "customfield_10042", "name": "Baseline end date"}],
+        status=200,
+    )
+    responses.add(
+        responses.GET, "https://jira.example.com/rest/api/2/search",
+        json={
+            "issues": [{
+                "key": "PROJ-502",
+                "fields": {
+                    "summary": "Pair-programmed feature",
+                    "status": {"name": "Done"},
+                    "issuetype": {"name": "Task"},
+                    "assignee": {"name": "rahul.k", "displayName": "Rahul Kumar"},
+                    "reporter": {"name": "vishal.s", "displayName": "Vishal Shakya"},
+                    "customfield_10042": "2026-02-05",
+                },
+            }],
+            "total": 1,
+        },
+        status=200,
+    )
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    engineers = [
+        {"name": "Rahul Kumar", "knox_id": "rahul.k"},
+        {"name": "Vishal Shakya", "knox_id": "vishal.s"},
+    ]
+    activity = client.collect_engineer_activity_for_backfill(
+        "PROJ", "Baseline end date", date(2026, 2, 2), engineers,
+    )
+    assert set(activity.by_engineer.keys()) == {"rahul.k", "vishal.s"}
+    assert len(activity.by_engineer["rahul.k"]) == 1
+    assert len(activity.by_engineer["vishal.s"]) == 1
+
+
+@responses.activate
+def test_collect_for_backfill_unmapped_authors():
+    """Tickets with assignees not in the engineer mapping go to unmapped."""
+    from datetime import date
+    responses.add(
+        responses.GET, "https://jira.example.com/rest/api/2/field",
+        json=[{"id": "customfield_10042", "name": "Baseline end date"}],
+        status=200,
+    )
+    responses.add(
+        responses.GET, "https://jira.example.com/rest/api/2/search",
+        json={
+            "issues": [{
+                "key": "PROJ-503",
+                "fields": {
+                    "summary": "Ticket from stranger",
+                    "status": {"name": "Done"},
+                    "issuetype": {"name": "Task"},
+                    "assignee": {"name": "unknown.user", "displayName": "Stranger"},
+                    "reporter": None,
+                    "customfield_10042": "2026-02-04",
+                },
+            }],
+            "total": 1,
+        },
+        status=200,
+    )
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    activity = client.collect_engineer_activity_for_backfill(
+        "PROJ", "Baseline end date", date(2026, 2, 2), [],
+    )
+    assert activity.by_engineer == {}
+    assert len(activity.unmapped_authors) == 1
+    assert activity.unmapped_authors[0].display_name == "Stranger"
+
+
 # ---------- Confluence URL parsing ----------
 
 def test_parse_url_pageid():
