@@ -124,7 +124,10 @@
       "recompute_cadence": "daily",
       "issue_types": ["Task", "Sub-task", "Story", "Bug"],
       "chronic_threshold": 3,
-      "holiday_calendar_id": "default"
+      "holiday_calendar_id": "default",
+      "_help_backfill": "activity_date_field names the JIRA date field used by `backfill-weekly` to assign retro-created tickets to past weeks (e.g. 'Baseline end date'). exclude_labels lists labels to filter OUT of the normal weekly report's JQL — e.g. ['backfill'] so retro-created tickets don't pollute today's report. Both default to empty (no behavior change) when omitted.",
+      "activity_date_field": "Baseline end date",
+      "exclude_labels": ["backfill"]
     }
   ]
 }
