@@ -1688,6 +1688,8 @@ def fetch_confluence_page(url, kind, max_chars, show_full):
             extra_bits = []
             if m.quarter:
                 extra_bits.append(f"Q={m.quarter}")
+            if m.completion_date:
+                extra_bits.append(f"completed={m.completion_date}")
             if m.priority:
                 extra_bits.append(f"prio={m.priority}")
             if m.dependency:

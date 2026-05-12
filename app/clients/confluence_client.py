@@ -36,6 +36,7 @@ class MilestoneRow:
     name: str = ""
     quarter: str = ""
     planned_date: str = ""
+    completion_date: str = ""   # actual completion date — TL-asserted
     priority: str = ""
     status: str = ""        # TL-declared
     dependency: str = ""
@@ -554,6 +555,12 @@ def _parse_milestones_table(table, warnings: list[str]) -> list[MilestoneRow]:
             column_map.setdefault("name", i)
         elif "quarter" in h:
             column_map["quarter"] = i
+        # NOTE: completion-date branch must come BEFORE planned-date because
+        # "completion date" contains the substring "date" which would
+        # otherwise be claimed by the planned-date rule.
+        elif ("completion" in h or "completed" in h
+              or "actual end" in h or h == "actual end date"):
+            column_map["completion_date"] = i
         elif "planned" in h or h in ("date", "target date", "target"):
             column_map.setdefault("planned_date", i)
         elif "priority" in h:
@@ -586,6 +593,7 @@ def _parse_milestones_table(table, warnings: list[str]) -> list[MilestoneRow]:
             name=get("name"),
             quarter=get("quarter"),
             planned_date=get("planned_date"),
+            completion_date=get("completion_date"),
             priority=get("priority"),
             status=get("status"),
             dependency=get("dependency"),

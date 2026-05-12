@@ -1019,3 +1019,80 @@ def test_parse_milestones_table_skips_empty_rows():
     rows = _parse_milestones_table(soup.find("table"), warnings)
     assert len(rows) == 1
     assert rows[0].name == "M1"
+
+
+# ---------- Phase A: completion_date column -----------------------------
+
+def test_parse_milestones_table_recognises_completion_date_column():
+    """New 'Completion Date' column populates MilestoneRow.completion_date."""
+    html = """
+    <table>
+      <tr><th>Milestone</th><th>Planned Date</th><th>Completion Date</th><th>Status</th></tr>
+      <tr><td>M1</td><td>2026-04-30</td><td>2026-04-28</td><td>Done</td></tr>
+      <tr><td>M2</td><td>2026-06-15</td><td></td><td>In-progress</td></tr>
+    </table>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    warnings = []
+    rows = _parse_milestones_table(soup.find("table"), warnings)
+    assert len(rows) == 2
+    assert rows[0].name == "M1"
+    assert rows[0].planned_date == "2026-04-30"
+    assert rows[0].completion_date == "2026-04-28"
+    assert rows[1].name == "M2"
+    assert rows[1].planned_date == "2026-06-15"
+    # In-progress row has empty completion cell — completion_date should be ""
+    assert rows[1].completion_date == ""
+
+
+def test_parse_milestones_table_completion_date_synonyms():
+    """Header variants 'Actual End', 'Actual End Date', 'Completed', 'Completed On'
+    all map to completion_date."""
+    for header in ("Completion Date", "Completion", "Completed",
+                   "Completed On", "Actual End", "Actual End Date"):
+        html = f"""
+        <table>
+          <tr><th>Milestone</th><th>Planned Date</th><th>{header}</th><th>Status</th></tr>
+          <tr><td>M1</td><td>2026-04-30</td><td>2026-04-28</td><td>Done</td></tr>
+        </table>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        rows = _parse_milestones_table(soup.find("table"), [])
+        assert len(rows) == 1, f"failed for header {header!r}"
+        assert rows[0].completion_date == "2026-04-28", \
+            f"failed for header {header!r}: got {rows[0].completion_date!r}"
+
+
+def test_parse_milestones_table_completion_does_not_steal_planned_date():
+    """'Completion Date' contains 'date' as a substring; the parser must NOT
+    let it claim the planned-date slot — Planned Date column wins."""
+    html = """
+    <table>
+      <tr><th>Milestone</th><th>Completion Date</th><th>Planned Date</th><th>Status</th></tr>
+      <tr><td>M1</td><td>2026-04-28</td><td>2026-04-30</td><td>Done</td></tr>
+    </table>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    rows = _parse_milestones_table(soup.find("table"), [])
+    assert len(rows) == 1
+    assert rows[0].planned_date == "2026-04-30"
+    assert rows[0].completion_date == "2026-04-28"
+
+
+def test_parse_milestones_table_legacy_table_without_completion_column():
+    """Tables without a Completion Date column still parse — completion_date
+    stays at its default empty string. No regression."""
+    html = """
+    <table>
+      <tr><th>Milestone</th><th>Planned Date</th><th>Status</th><th>Description</th></tr>
+      <tr><td>M1</td><td>2026-04-30</td><td>Done</td><td>desc text</td></tr>
+    </table>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    rows = _parse_milestones_table(soup.find("table"), [])
+    assert len(rows) == 1
+    assert rows[0].name == "M1"
+    assert rows[0].planned_date == "2026-04-30"
+    assert rows[0].status == "Done"
+    assert rows[0].description == "desc text"
+    assert rows[0].completion_date == ""
