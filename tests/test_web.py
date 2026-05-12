@@ -462,6 +462,45 @@ def test_project_detail_renders_milestones(client):
     assert "AI: Verified" in body
 
 
+def test_project_detail_milestones_show_completion_date_column(client):
+    """Phase B: project detail page shows a Completed column reading the
+    LLM's echoed completion_date per milestone. Empty / missing values
+    render as em-dash."""
+    pid = _seed_project("WITHCD", "With Completion Date")
+    from datetime import datetime
+    from app.db import session_scope
+    from app.models import ProjectStatus
+    with session_scope() as s:
+        s.add(ProjectStatus(
+            project_id=pid, computed_at=datetime.utcnow(),
+            overall_health="Green", schedule_status="OnTrack",
+            completion_pct=50, confidence="High",
+            rationale="One milestone done with completion date set; one in progress.",
+            milestones_json=[
+                {"name": "M1 Design freeze", "planned_date": "2026-04-15",
+                 "completion_date": "2026-04-12",
+                 "tl_declared_status": "Done", "ai_verification": "Verified",
+                 "evidence": "Closed tickets cluster around 2026-04-12"},
+                {"name": "M2 Build complete", "planned_date": "2026-05-20",
+                 "completion_date": None,
+                 "tl_declared_status": "In-progress",
+                 "ai_verification": "NotApplicable", "evidence": "..."},
+            ],
+            prompt_version="ProjectStatusReasoning/v3", llm_mode_used="ollama",
+        ))
+    r = client.get("/projects/WITHCD")
+    assert r.status_code == 200
+    body = r.text
+    # The table header has a 'Completed' column
+    assert ">Completed<" in body
+    # M1's completion date appears in the body
+    assert "2026-04-12" in body
+    # M2's null completion_date renders as em-dash (the macro fallback)
+    # We can't assert on a specific dash without false positives elsewhere
+    # in the page; checking that M2 appears + completion column is enough.
+    assert "M2 Build complete" in body
+
+
 # ---- Sparkline ---------------------------------------------------------
 
 def test_sparkline_renders_svg_when_history_exists(client):

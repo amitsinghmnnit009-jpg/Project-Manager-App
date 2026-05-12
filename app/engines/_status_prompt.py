@@ -14,8 +14,8 @@ from app.prompts import load_prompt
 
 
 # Locked prompt + version (recorded with each persisted compute per FR §A.6.1)
-PROMPT_FILE = "project_status_reasoning_v2"
-PROMPT_VERSION = "ProjectStatusReasoning/v2"
+PROMPT_FILE = "project_status_reasoning_v3"
+PROMPT_VERSION = "ProjectStatusReasoning/v3"
 
 
 # Prompt 3 schema enums (per AI_PROMPTS_PHASE1.md §Prompt 3)
@@ -35,6 +35,10 @@ def render_milestones_block(milestones) -> str:
     placeholders for columns the TL didn't fill (e.g. when using the slim
     4-column fallback, Priority/Dependency/Remark won't appear in the line).
     Required fields (name, planned_date, status, description) always render.
+
+    completion_date (Phase B) is rendered next to planned_date when populated;
+    feeds the v3 prompt's TL-Done verification rule (cross-check the asserted
+    completion date against JIRA closure events).
     """
     if not milestones:
         return "(none — Confluence page has no milestones table or it could not be parsed)"
@@ -46,6 +50,9 @@ def render_milestones_block(milestones) -> str:
                  f"tl_declared_status={m.status}",
                  f"description={m.description}"]
         # Optional fields — include only when populated
+        if m.completion_date:
+            # Slot right after planned= so the AI sees both dates side-by-side.
+            parts.insert(2, f"completion_date={m.completion_date}")
         if m.priority:
             parts.insert(2, f"priority={m.priority}")
         if m.dependency:
@@ -245,6 +252,17 @@ def validate_prompt3_json(parsed) -> tuple[bool, list[str]]:
                     f"ai_verification={aiv!r} — AI must NOT verify non-Done "
                     f"milestones (set ai_verification='NotApplicable')"
                 )
+            # Phase B: completion_date is OPTIONAL but, when present, must be
+            # either a string (ISO-ish date — we don't enforce strict format)
+            # or null. The v3 prompt instructs the LLM to echo the value
+            # through; we accept both representations.
+            if "completion_date" in m:
+                cd = m.get("completion_date")
+                if cd is not None and not isinstance(cd, str):
+                    issues.append(
+                        f"milestones[{i}].completion_date={cd!r} "
+                        f"is not a string or null"
+                    )
 
     rationale = parsed.get("rationale")
     if not isinstance(rationale, str) or len(rationale) < 10:

@@ -286,7 +286,7 @@ def test_run_status_first_compute_inserts_project_status(project_in_db, monkeypa
         assert ps.schedule_status == "AtRisk"
         assert ps.completion_pct == 30
         assert ps.confidence == "Medium"
-        assert ps.prompt_version == "ProjectStatusReasoning/v2"
+        assert ps.prompt_version == "ProjectStatusReasoning/v3"
         assert ps.llm_mode_used == "ollama"
         # No history row on first compute
         assert s.execute(select(ProjectStatusHistory)).scalars().all() == []
