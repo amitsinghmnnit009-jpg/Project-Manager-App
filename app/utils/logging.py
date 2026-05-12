@@ -7,9 +7,10 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from app.config import get_config
 
@@ -100,6 +101,65 @@ def prompt_log() -> logging.Logger:
 
     Used by `python manage.py show-last-llm-call` for ad-hoc inspection."""
     return get_logger("llm_prompts")
+
+
+def echo_external_call(source: str, method: str, path: str,
+                       params: Optional[dict], *,
+                       status, duration: float,
+                       summary: Optional[dict] = None,
+                       error: str = "") -> None:
+    """One-line STDERR echo of an external HTTP call (JIRA / Confluence).
+
+    Called from each client's _log_call() so the user can see live what's
+    being asked of the external system while running CLI commands, instead
+    of having to tail logs/external_calls.jsonl after the fact.
+
+    Gated at the call site by cfg.logging.echo_external_calls_to_stderr.
+    Writes to stderr so it doesn't interfere with stdout-piped CLI output
+    (JSON dumps, report markdown, etc.). ASCII-only — no fancy arrows —
+    so Windows codepages (cp1252) render it correctly.
+
+    Format examples:
+        [JIRA] GET /rest/api/2/search  jql=project = MAICTJ AND ...  -> 200 in 0.84s  (issues=12, total=12)
+        [JIRA] GET /rest/api/2/issue/MAICTJ-3/comment                -> 200 in 0.31s  (comments=4)
+        [JIRA] GET /rest/api/2/myself                                -> 200 in 0.22s  (user=alice)
+        [CONFLUENCE] GET /rest/api/content  title=Project Status     -> 200 in 0.42s  (result_count=1)
+        [JIRA] GET /rest/api/2/search  jql=...                        -> 429 in 0.18s  ERROR: Rate limit exceeded
+    """
+    label = f"[{source.upper()}]"
+    line = f"{label} {method} {path}"
+    p = params or {}
+    if "jql" in p:
+        line += f"  jql={p['jql']}"
+    else:
+        # Show useful short params; skip noisy ones like 'expand' that bloat the line.
+        short = ", ".join(
+            f"{k}={v}" for k, v in p.items()
+            if k not in ("expand", "fields") and v not in (None, "")
+        )
+        if short:
+            line += f"  {short}"
+    if error:
+        status_str = str(status) if status is not None else "ERR"
+        line += f"  -> {status_str} in {duration}s  ERROR: {error[:200]}"
+    else:
+        line += f"  -> {status} in {duration}s"
+        if summary:
+            # Skip list-valued fields (first_keys, first_titles) — they're useful
+            # in the JSONL log but visually noisy in a one-line terminal echo.
+            kv = ", ".join(
+                f"{k}={v}" for k, v in summary.items()
+                if not isinstance(v, (list, dict))
+            )
+            if kv:
+                line += f"  ({kv})"
+    try:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+    except Exception:
+        # Echo is a best-effort debug aid — never let a stderr write
+        # failure (e.g. closed stream in some test runners) propagate.
+        pass
 
 
 def external_call_log() -> logging.Logger:

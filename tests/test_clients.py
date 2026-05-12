@@ -1096,3 +1096,140 @@ def test_parse_milestones_table_legacy_table_without_completion_column():
     assert rows[0].status == "Done"
     assert rows[0].description == "desc text"
     assert rows[0].completion_date == ""
+
+
+# ---------- stderr echo of external calls ----------
+# These verify the live-terminal-echo wired into JiraClient._log_call() /
+# ConfluenceClient._log_call(). Independent of the JSONL log: it can be on
+# while the JSONL log is off (and vice versa). Default ON.
+
+@responses.activate
+def test_jira_call_echoes_jql_to_stderr_when_flag_on(capsys, monkeypatch):
+    """When cfg.logging.echo_external_calls_to_stderr=True, every JIRA call
+    writes a one-line summary to STDERR including the JQL on /search and
+    the result count from the response."""
+    from app.config import get_config
+    cfg = get_config()
+    monkeypatch.setattr(cfg.logging, "echo_external_calls_to_stderr", True)
+
+    jql = "project = PROJ AND updated >= '2026-05-04'"
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/search",
+        json={"issues": [{"key": "PROJ-1"}, {"key": "PROJ-2"}], "total": 2},
+        status=200,
+    )
+
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    client._get("/rest/api/2/search", params={"jql": jql, "maxResults": 50})
+
+    captured = capsys.readouterr()
+    assert "[JIRA]" in captured.err
+    assert "GET /rest/api/2/search" in captured.err
+    assert f"jql={jql}" in captured.err
+    assert "-> 200" in captured.err
+    assert "issue_count=2" in captured.err
+    # stdout untouched
+    assert captured.out == ""
+
+
+@responses.activate
+def test_jira_call_silent_when_echo_flag_off(capsys, monkeypatch):
+    """Flipping echo_external_calls_to_stderr=False keeps stderr clean
+    (while leaving the JSONL log path untouched)."""
+    from app.config import get_config
+    cfg = get_config()
+    monkeypatch.setattr(cfg.logging, "echo_external_calls_to_stderr", False)
+
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/myself",
+        json={"name": "alice", "displayName": "Alice"},
+        status=200,
+    )
+
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    client.whoami()
+
+    captured = capsys.readouterr()
+    assert "[JIRA]" not in captured.err
+    assert captured.out == ""
+
+
+@responses.activate
+def test_jira_call_echoes_error_to_stderr(capsys, monkeypatch):
+    """Failed JIRA calls still echo to stderr, with the status + error text
+    so the user sees rate-limit / auth failures live."""
+    from app.config import get_config
+    cfg = get_config()
+    monkeypatch.setattr(cfg.logging, "echo_external_calls_to_stderr", True)
+
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/search",
+        json={"message": "Rate limit exceeded."},
+        status=429,
+    )
+
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    with pytest.raises(Exception):
+        client._get("/rest/api/2/search", params={"jql": "project = PROJ"})
+
+    captured = capsys.readouterr()
+    assert "[JIRA]" in captured.err
+    assert "-> 429" in captured.err
+    assert "ERROR:" in captured.err
+
+
+@responses.activate
+def test_confluence_call_echoes_to_stderr_when_flag_on(capsys, monkeypatch):
+    """Same one-line stderr echo for Confluence — title/result_count surfaced."""
+    from app.config import get_config
+    cfg = get_config()
+    monkeypatch.setattr(cfg.logging, "echo_external_calls_to_stderr", True)
+
+    responses.add(
+        responses.GET,
+        "https://confluence.example.com/rest/api/content",
+        json={
+            "results": [{"id": "111", "title": "Project Status 2026"}],
+            "size": 1,
+        },
+        status=200,
+    )
+
+    client = ConfluenceClient(base_url="https://confluence.example.com", token="tok")
+    client._get("/rest/api/content", params={"title": "Project Status 2026", "limit": 1})
+
+    captured = capsys.readouterr()
+    assert "[CONFLUENCE]" in captured.err
+    assert "GET /rest/api/content" in captured.err
+    assert "title=Project Status 2026" in captured.err
+    assert "-> 200" in captured.err
+    assert "result_count=1" in captured.err
+
+
+@responses.activate
+def test_external_call_echo_independent_of_jsonl_log(capsys, monkeypatch):
+    """Flag ordering check: echo can be ON while JSONL is OFF.
+    Confirms the two log paths are independent at the config gate."""
+    from app.config import get_config
+    cfg = get_config()
+    monkeypatch.setattr(cfg.logging, "echo_external_calls_to_stderr", True)
+    monkeypatch.setattr(cfg.logging, "log_full_external_calls", False)
+
+    responses.add(
+        responses.GET,
+        "https://jira.example.com/rest/api/2/myself",
+        json={"name": "alice"},
+        status=200,
+    )
+
+    client = JiraClient(base_url="https://jira.example.com", token="tok")
+    client.whoami()
+
+    captured = capsys.readouterr()
+    # Echo still present despite log_full_external_calls=False
+    assert "[JIRA]" in captured.err
+    assert "GET /rest/api/2/myself" in captured.err
+

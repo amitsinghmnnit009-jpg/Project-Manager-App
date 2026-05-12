@@ -91,6 +91,14 @@ class LoggingConfig(BaseModel):
     # stable — the high-level engine summaries + retry/error logs in
     # system.jsonl continue regardless.
     log_full_external_calls: bool = True
+    # When True (default), every JIRA / Confluence HTTP call also prints a
+    # one-line summary to STDERR as it happens. Useful for ad-hoc CLI
+    # debugging — see the JQL / path / status / duration / result count
+    # live in the terminal instead of tailing logs/external_calls.jsonl.
+    # Independent of log_full_external_calls — you can keep the on-disk log
+    # off but still get the terminal echo, or vice versa. Set False if
+    # running `serve` long-running and the echo is noisy.
+    echo_external_calls_to_stderr: bool = True
 
 
 class SchedulerConfig(BaseModel):

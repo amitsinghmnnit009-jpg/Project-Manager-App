@@ -54,13 +54,14 @@
   },
 
   "logging": {
-    "_help": "JSONL logs rotated by size. log_full_llm_prompts=true writes full LLM prompts+responses to logs/llm_prompts.jsonl. log_full_external_calls=true writes full JIRA/Confluence calls (incl. JQL) to logs/external_calls.jsonl. Both for debugging — disable in production.",
+    "_help": "JSONL logs rotated by size. log_full_llm_prompts=true writes full LLM prompts+responses to logs/llm_prompts.jsonl. log_full_external_calls=true writes full JIRA/Confluence calls (incl. JQL) to logs/external_calls.jsonl. echo_external_calls_to_stderr=true prints a one-line summary of every JIRA/Confluence call (incl. JQL) live to STDERR so CLI users can see queries as they fire. All default true for debugging — disable in production.",
     "directory": "./logs",
     "level": "INFO",
     "rotate_max_bytes": 10485760,
     "rotate_backups": 10,
     "log_full_llm_prompts": true,
-    "log_full_external_calls": true
+    "log_full_external_calls": true,
+    "echo_external_calls_to_stderr": true
   },
 
   "scheduler": {

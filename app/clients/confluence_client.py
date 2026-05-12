@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup
 
 from app.clients.http_session import build_session, rate_limit_wait
 from app.config import get_config
-from app.utils.logging import external_call_log, system_log, sync_log
+from app.utils.logging import echo_external_call, external_call_log, system_log, sync_log
 
 
 # ---------- Public dataclasses --------------------------------------------
@@ -222,9 +222,44 @@ class ConfluenceClient:
     def _log_call(self, path: str, params: Optional[dict],
                   *, status, duration: float,
                   response=None, error: str = ""):
-        """Write one structured line to logs/external_calls.jsonl per
-        Confluence call. Gated by config.logging.log_full_external_calls."""
-        if not get_config().logging.log_full_external_calls:
+        """Per-call logging for Confluence — JSONL audit trail + stderr echo.
+
+        Two independent outputs, each with its own config gate:
+          - logs/external_calls.jsonl (gated by log_full_external_calls)
+          - one-line stderr echo      (gated by echo_external_calls_to_stderr)
+        """
+        cfg = get_config()
+
+        # ---- Build the result summary once (used by stderr echo + JSONL) ----
+        summary: Optional[dict] = None
+        if not error and isinstance(response, dict):
+            # Keyed off the response shape — collection vs single page.
+            if "results" in response:
+                results = response.get("results") or []
+                summary = {
+                    "result_count": len(results),
+                    "size": response.get("size", len(results)),
+                    "first_titles": [
+                        (r.get("title") or "")[:60] for r in results[:5]
+                    ],
+                }
+            elif "id" in response and "title" in response:
+                summary = {
+                    "page_id": response.get("id"),
+                    "title": (response.get("title") or "")[:80],
+                    "type": response.get("type", ""),
+                }
+
+        # ---- Live stderr echo (independent of JSONL log) -------------------
+        if cfg.logging.echo_external_calls_to_stderr:
+            echo_external_call(
+                "confluence", "GET", path, params,
+                status=status, duration=duration,
+                summary=summary, error=error,
+            )
+
+        # ---- JSONL audit trail --------------------------------------------
+        if not cfg.logging.log_full_external_calls:
             return
 
         extra: dict = {
@@ -238,25 +273,8 @@ class ConfluenceClient:
         }
         if error:
             extra["error"] = error
-        elif isinstance(response, dict):
-            # Result summary keyed off the response shape — single page
-            # vs collection vs space-list — so the log is greppable by
-            # content kind without dumping the full JSON.
-            if "results" in response:
-                results = response.get("results") or []
-                extra["result_summary"] = {
-                    "result_count": len(results),
-                    "size": response.get("size", len(results)),
-                    "first_titles": [
-                        (r.get("title") or "")[:60] for r in results[:5]
-                    ],
-                }
-            elif "id" in response and "title" in response:
-                extra["result_summary"] = {
-                    "page_id": response.get("id"),
-                    "title": (response.get("title") or "")[:80],
-                    "type": response.get("type", ""),
-                }
+        elif summary is not None:
+            extra["result_summary"] = summary
         external_call_log().info("confluence call", extra=extra)
 
     # ---------- whoami / health -----------------------------------------

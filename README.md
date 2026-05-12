@@ -335,10 +335,19 @@ All structured JSONL under `logs/`. Three categories:
 | `logs/ai_compute.jsonl` + `AIComputeLog` DB table | ✅ Always | (DB query) — compact LLM audit trail (success/failure, mode, duration, 200-char response excerpt, prompt version) |
 | `logs/llm_prompts.jsonl` | Gated by `config.logging.log_full_llm_prompts` (default `true`) | `show-last-llm-call` — FULL system + user prompts + raw response per LLM call |
 | `logs/external_calls.jsonl` | Gated by `config.logging.log_full_external_calls` (default `true`) | `show-last-external-calls` — FULL JIRA/Confluence call (path, JQL/params, status, duration, result_summary) |
+| _live stderr_ | Gated by `config.logging.echo_external_calls_to_stderr` (default `true`) | watch the terminal — every JIRA/Confluence call prints one line to STDERR as it fires (JQL / path / status / duration / result count) so you can see queries live without tailing the JSONL log |
 | `logs/sent_emails.jsonl` + `ReminderLog` DB table | ✅ Always (mock mode) | `show-last-reminders` — every mock-sent reminder email (recipient, subject, body, type=pre/post_cutoff) |
 | `logs/reminder.jsonl` | ✅ Always | (any text editor) — compact one-line per reminder send (knox_id, project, type, status) |
 
-Both gated logs default ON during stabilisation. Once Phase 1 is stable, flip to `false` in `config.json` to save disk; the always-on layers continue providing operational telemetry.
+Both gated logs default ON during stabilisation. Once Phase 1 is stable, flip to `false` in `config.json` to save disk; the always-on layers continue providing operational telemetry. The stderr echo is independent of the JSONL log — you can keep the on-disk log off and still get the terminal echo (useful for `serve` if you want clean disk + live debug), or vice versa.
+
+Sample stderr echo from a `python manage.py run-aggregation MAICTJ` run:
+```
+[CONFLUENCE] GET /rest/api/content  title=MAICTJ Milestones, spaceKey=DS, expand=body.storage  -> 200 in 0.41s  (result_count=1, size=1)
+[JIRA] GET /rest/api/2/search  jql=project = MAICTJ AND updated >= '2026-05-04' AND labels NOT IN ('backfill')  -> 200 in 0.83s  (issue_count=12, total=12)
+[JIRA] GET /rest/api/2/issue/MAICTJ-7/comment                                                   -> 200 in 0.29s  (comment_count=3)
+[JIRA] GET /rest/api/2/issue/MAICTJ-7/worklog                                                   -> 200 in 0.18s  (worklog_count=1)
+```
 
 ---
 

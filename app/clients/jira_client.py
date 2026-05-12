@@ -21,7 +21,7 @@ import requests
 
 from app.clients.http_session import build_session
 from app.config import get_config
-from app.utils.logging import external_call_log, system_log, sync_log
+from app.utils.logging import echo_external_call, external_call_log, system_log, sync_log
 
 
 # Changelog fields that create noise without adding meaning. Drop before LLM.
@@ -254,9 +254,52 @@ class JiraClient:
     def _log_call(self, path: str, params: Optional[dict],
                   *, status, duration: float,
                   response=None, error: str = ""):
-        """Write one structured line to logs/external_calls.jsonl per JIRA
-        call. Gated by config.logging.log_full_external_calls."""
-        if not get_config().logging.log_full_external_calls:
+        """Per-call logging for JIRA — JSONL audit trail + optional stderr echo.
+
+        Two independent outputs, each with its own config gate:
+          - logs/external_calls.jsonl (gated by log_full_external_calls)
+          - one-line stderr echo      (gated by echo_external_calls_to_stderr)
+
+        The result summary is computed once and used by both — keyed off
+        the response shape so the line is greppable by content kind
+        without dumping the full JSON.
+        """
+        cfg = get_config()
+
+        # ---- Build the result summary once (used by stderr echo + JSONL) ----
+        summary: Optional[dict] = None
+        if not error and isinstance(response, dict):
+            if "issues" in response:
+                issues = response.get("issues") or []
+                summary = {
+                    "issue_count": len(issues),
+                    "total": response.get("total", len(issues)),
+                    "first_keys": [i.get("key") for i in issues[:5]],
+                }
+            elif "comments" in response:
+                summary = {
+                    "comment_count": len(response.get("comments") or [])
+                }
+            elif "worklogs" in response:
+                summary = {
+                    "worklog_count": len(response.get("worklogs") or [])
+                }
+            elif "displayName" in response or "name" in response:
+                # /myself endpoint
+                summary = {
+                    "user": response.get("name") or response.get("displayName") or ""
+                }
+
+        # ---- Live stderr echo (independent of JSONL log) -------------------
+        if cfg.logging.echo_external_calls_to_stderr:
+            echo_external_call(
+                "jira", "GET", path, params,
+                status=status, duration=duration,
+                summary=summary, error=error,
+            )
+
+        # ---- JSONL audit trail --------------------------------------------
+        if not cfg.logging.log_full_external_calls:
             return
 
         extra: dict = {
@@ -270,30 +313,8 @@ class JiraClient:
         }
         if error:
             extra["error"] = error
-        elif isinstance(response, dict):
-            # Build a result summary keyed off the response shape so the
-            # log line is greppable by content kind without dumping the
-            # full JSON payload.
-            if "issues" in response:
-                issues = response.get("issues") or []
-                extra["result_summary"] = {
-                    "issue_count": len(issues),
-                    "total": response.get("total", len(issues)),
-                    "first_keys": [i.get("key") for i in issues[:5]],
-                }
-            elif "comments" in response:
-                extra["result_summary"] = {
-                    "comment_count": len(response.get("comments") or [])
-                }
-            elif "worklogs" in response:
-                extra["result_summary"] = {
-                    "worklog_count": len(response.get("worklogs") or [])
-                }
-            elif "displayName" in response or "name" in response:
-                # /myself endpoint
-                extra["result_summary"] = {
-                    "user": response.get("name") or response.get("displayName") or ""
-                }
+        elif summary is not None:
+            extra["result_summary"] = summary
         external_call_log().info("jira call", extra=extra)
 
     # ---------- whoami / health -----------------------------------------
