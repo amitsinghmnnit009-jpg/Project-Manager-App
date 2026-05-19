@@ -55,7 +55,7 @@ CRITICAL RULES:
 
 4b. ECHO completion_date in the output milestone object: copy the value through verbatim if the input milestone row had one; set it to null when the row had no Completion Date column or the cell was empty. Do not invent a value.
 
-5. completion_pct calculation uses the EFFECTIVE Done count. A milestone counts toward Done only when (a) tl_declared_status == "Done" AND (b) ai_verification == "Verified". Disputed and Inconclusive Done claims do NOT count. completion_pct = round((effective_done_count / total_milestones) * 100). Set completion_pct = null when overall_health == "InsufficientEvidence".
+5. completion_pct counts all TL-declared Done milestones EXCEPT those with ai_verification == "Disputed" (meaning JIRA evidence actively contradicts the Done claim). "Inconclusive" means evidence is absent or ambiguous — in that case TL's declaration is accepted and the milestone DOES count. completion_pct = round(((verified_done_count + inconclusive_done_count) / total_milestones) * 100). Only Disputed Done milestones are excluded. Set completion_pct = null when overall_health == "InsufficientEvidence".
 
 6. Schedule status semantics:
    - OnTrack: every milestone with planned_date <= today has tl_declared_status == "Done" (and Done milestones are Verified or Inconclusive); next upcoming milestone plausibly on pace

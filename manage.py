@@ -1724,5 +1724,227 @@ def fetch_confluence_page(url, kind, max_chars, show_full):
             click.echo(f"  ! {w}")
 
 
+# ---------------------------------------------------------------------------
+# Demo data commands
+# ---------------------------------------------------------------------------
+
+@cli.command("seed-demo")
+@click.option("--reset", is_flag=True, default=False,
+              help="Delete existing demo data before seeding (re-seed from scratch).")
+def seed_demo(reset):
+    """Seed the DB with 3 realistic ASPICE/automotive demo projects for manager presentations.
+
+    Creates DEMO-ASPICE (Amber/AtRisk), DEMO-HWINT (Green/OnTrack), and
+    DEMO-SYSVAL (Red/Delayed) alongside any existing real project data.
+    Real project data is NEVER touched.
+
+    Run `python manage.py serve` afterwards — all three demo projects appear in the
+    portfolio view alongside real projects. Navigate to a DEMO-* project to show the
+    full UI (weekly reports, sparkline, milestones, highlights, compare weeks).
+
+    To remove demo data after the presentation: `python manage.py clear-demo`
+    """
+    from datetime import datetime
+    from sqlalchemy import select, delete
+    from app.db import init_database, session_scope
+    from app.models import (
+        Project, WeeklyReport, ProjectStatus, ProjectStatusHistory,
+        AIComputeLog, ReminderLog,
+    )
+    from app.demo_data import ALL_DEMO_PROJECTS, DEMO_PROJECT_CODES
+
+    init_database()
+
+    if reset:
+        click.echo("--reset: removing existing demo data before re-seeding...")
+        with session_scope() as s:
+            demo_rows = s.execute(
+                select(Project).where(Project.code.in_(DEMO_PROJECT_CODES))
+            ).scalars().all()
+            demo_ids = [p.id for p in demo_rows]
+            if demo_ids:
+                s.execute(delete(AIComputeLog).where(AIComputeLog.project_id.in_(demo_ids)))
+                s.execute(delete(ReminderLog).where(ReminderLog.project_id.in_(demo_ids)))
+                s.execute(delete(WeeklyReport).where(WeeklyReport.project_id.in_(demo_ids)))
+                s.execute(delete(ProjectStatusHistory).where(
+                    ProjectStatusHistory.project_id.in_(demo_ids)))
+                s.execute(delete(ProjectStatus).where(ProjectStatus.project_id.in_(demo_ids)))
+            for p in demo_rows:
+                s.delete(p)
+        click.echo("  Done.")
+
+    total_reports = 0
+    total_history = 0
+
+    for demo in ALL_DEMO_PROJECTS:
+        pdata = demo["project"]
+        code = pdata["code"]
+
+        with session_scope() as s:
+            # ---- upsert Project ----
+            proj = s.execute(select(Project).where(Project.code == code)).scalar_one_or_none()
+            if proj is None:
+                proj = Project(**pdata)
+                s.add(proj)
+                s.flush()
+                click.echo(f"  [{code}] Project created.")
+            else:
+                for k, v in pdata.items():
+                    if k != "code":
+                        setattr(proj, k, v)
+                s.flush()
+                click.echo(f"  [{code}] Project updated (already existed).")
+
+            proj_id = proj.id
+
+            # ---- upsert ProjectStatus ----
+            existing_ps = s.execute(
+                select(ProjectStatus).where(ProjectStatus.project_id == proj_id)
+            ).scalar_one_or_none()
+            sdata = demo["status"]
+            if existing_ps is None:
+                s.add(ProjectStatus(
+                    project_id=proj_id,
+                    computed_at=datetime.utcnow(),
+                    **sdata,
+                ))
+            else:
+                for k, v in sdata.items():
+                    setattr(existing_ps, k, v)
+                existing_ps.computed_at = datetime.utcnow()
+
+            # ---- insert ProjectStatusHistory (skip if already seeded) ----
+            existing_hist_count = s.execute(
+                select(ProjectStatusHistory).where(ProjectStatusHistory.project_id == proj_id)
+            ).scalars().all()
+            if not existing_hist_count:
+                for (cat, ph, nh, ps, ns, pp, np_) in demo["status_history"]:
+                    s.add(ProjectStatusHistory(
+                        project_id=proj_id,
+                        computed_at=cat,
+                        prior_health=ph, new_health=nh,
+                        prior_schedule=ps, new_schedule=ns,
+                        prior_completion_pct=pp, new_completion_pct=np_,
+                        rationale="(demo seed)",
+                        prompt_version="ProjectStatusReasoning/v3",
+                    ))
+                total_history += len(demo["status_history"])
+
+            # ---- upsert WeeklyReport rows ----
+            n_reports = 0
+            for week_date, content_template in demo["reports"].items():
+                content = content_template.format(week=week_date.strftime("%Y-%m-%d"))
+                existing_wr = s.execute(
+                    select(WeeklyReport).where(
+                        WeeklyReport.project_id == proj_id,
+                        WeeklyReport.week_of == week_date,
+                    )
+                ).scalar_one_or_none()
+                if existing_wr is None:
+                    s.add(WeeklyReport(
+                        project_id=proj_id,
+                        week_of=week_date,
+                        content_markdown=content,
+                        generated_at=datetime(week_date.year, week_date.month, week_date.day, 14, 0, 0),
+                        regenerated_count=0,
+                        prompt_version_aggregation="ProjectWeeklyAggregation/v2",
+                        prompt_version_highlights="ProjectHighlights/v2",
+                        llm_mode_used="openai",
+                    ))
+                    n_reports += 1
+                else:
+                    existing_wr.content_markdown = content
+            total_reports += n_reports
+
+            # ---- AIComputeLog rows (one status + one aggregation per report week) ----
+            existing_logs = s.execute(
+                select(AIComputeLog).where(AIComputeLog.project_id == proj_id)
+            ).scalars().all()
+            if not existing_logs:
+                for i, week_date in enumerate(sorted(demo["reports"].keys())):
+                    ts = datetime(week_date.year, week_date.month, week_date.day, 13, 30 + i % 10, 0)
+                    s.add(AIComputeLog(
+                        project_id=proj_id,
+                        prompt_name="ProjectWeeklyAggregation",
+                        prompt_version="ProjectWeeklyAggregation/v2",
+                        started_at=ts,
+                        finished_at=datetime(ts.year, ts.month, ts.day, ts.hour, ts.minute + 1, 30),
+                        success_flag=True,
+                        llm_mode="openai",
+                        response_excerpt=f'(demo) week {week_date} aggregation succeeded',
+                        error_text="",
+                    ))
+                    s.add(AIComputeLog(
+                        project_id=proj_id,
+                        prompt_name="ProjectStatusReasoning",
+                        prompt_version="ProjectStatusReasoning/v3",
+                        started_at=datetime(ts.year, ts.month, ts.day, 14, 0 + i % 10, 0),
+                        finished_at=datetime(ts.year, ts.month, ts.day, 14, 0 + i % 10, 20),
+                        success_flag=True,
+                        llm_mode="openai",
+                        response_excerpt=f'(demo) week {week_date} status compute succeeded',
+                        error_text="",
+                    ))
+
+        click.echo(f"  [{code}] {n_reports} weekly reports seeded, "
+                   f"{len(demo['status_history'])} history points.")
+
+    click.echo(
+        f"\nDemo seeding complete — {len(ALL_DEMO_PROJECTS)} projects, "
+        f"{total_reports} new report rows, {total_history} new history rows.\n"
+        f"Run: python manage.py serve\n"
+        f"Then open: http://127.0.0.1:8000/portfolio"
+    )
+
+
+@cli.command("clear-demo")
+@click.confirmation_option(
+    prompt="This will permanently delete all DEMO-* project data from the database. Continue?"
+)
+def clear_demo():
+    """Remove all demo project data from the database.
+
+    Only deletes projects whose code is in the DEMO-ASPICE / DEMO-HWINT / DEMO-SYSVAL set.
+    Real project data (e.g. MAICTJ) is NEVER touched.
+    """
+    from sqlalchemy import select, delete
+    from app.db import init_database, session_scope
+    from app.models import (
+        Project, WeeklyReport, ProjectStatus, ProjectStatusHistory,
+        AIComputeLog, ReminderLog,
+    )
+    from app.demo_data import DEMO_PROJECT_CODES
+
+    init_database()
+
+    with session_scope() as s:
+        demo_rows = s.execute(
+            select(Project).where(Project.code.in_(DEMO_PROJECT_CODES))
+        ).scalars().all()
+
+        if not demo_rows:
+            click.echo("No demo projects found in DB — nothing to delete.")
+            return
+
+        demo_ids = [p.id for p in demo_rows]
+        codes_found = [p.code for p in demo_rows]
+
+        # Delete child rows first (FK constraints)
+        for tbl, col in [
+            (AIComputeLog, AIComputeLog.project_id),
+            (ReminderLog, ReminderLog.project_id),
+            (WeeklyReport, WeeklyReport.project_id),
+            (ProjectStatusHistory, ProjectStatusHistory.project_id),
+            (ProjectStatus, ProjectStatus.project_id),
+        ]:
+            n = s.execute(delete(tbl).where(col.in_(demo_ids))).rowcount
+            click.echo(f"  Deleted {n} {tbl.__tablename__} rows")
+
+        for p in demo_rows:
+            s.delete(p)
+
+    click.echo(f"\nDemo data cleared: {', '.join(codes_found)}")
+
+
 if __name__ == "__main__":
     cli()

@@ -215,7 +215,7 @@ def _seed_status(project_id: int, **overrides):
 def test_get_status_404_when_no_row_yet(client, project_in_db):
     r = client.get(f"/api/projects/{project_in_db}/status")
     assert r.status_code == 404
-    assert "not computed yet" in r.json()["detail"].lower()
+    assert "no status computed yet" in r.json()["detail"].lower()
 
 
 def test_get_status_returns_seeded_row(client, project_in_db):
