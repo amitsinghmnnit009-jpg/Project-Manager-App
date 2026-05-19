@@ -116,11 +116,11 @@ def main() -> None:
     else:
         counts: dict[tuple, int] = {}
         for m in milestones:
-            key = (m.get("tl_declared_status", "?"), m.get("ai_verification", "?"))
+            key = (m.get("tl_declared_status") or "?", m.get("ai_verification") or "?")
             counts[key] = counts.get(key, 0) + 1
 
         # Print sorted
-        for (tld, aiv), n in sorted(counts.items(), key=lambda x: (x[0][0] or "", x[0][1] or "")):
+        for (tld, aiv), n in sorted(counts.items(), key=lambda x: (x[0][0], x[0][1])):
             flag = ""
             if tld == "Done":
                 if aiv in ("Verified", "Inconclusive"):
@@ -132,7 +132,7 @@ def main() -> None:
             else:
                 if aiv != "NotApplicable":
                     flag = "  ← BUG: non-Done should be NotApplicable (LLM error)"
-            print(f"  tl={tld:<12}  ai={aiv:<14}  count={n:>3}{flag}")
+            print(f"  tl={str(tld or '?'):<12}  ai={str(aiv or '?'):<14}  count={n:>3}{flag}")
 
     # ------------------------------------------------------------------ #
     # 3. Expected completion_pct
@@ -212,12 +212,13 @@ def main() -> None:
     if milestones:
         changed = []
         for m in milestones:
-            tld = m.get("tl_declared_status")
-            aiv = m.get("ai_verification")
+            tld = m.get("tl_declared_status") or ""
+            aiv = m.get("ai_verification") or ""
+            name = (m.get("name") or "?")[:55]
             if tld != "Done" and aiv != "NotApplicable":
-                changed.append((m.get("name", "?")[:55], tld, aiv, "NotApplicable"))
+                changed.append((name, tld, aiv, "NotApplicable"))
             elif tld == "Done" and aiv == "NotApplicable":
-                changed.append((m.get("name", "?")[:55], tld, aiv, "Inconclusive"))
+                changed.append((name, tld, aiv, "Inconclusive"))
 
         if not changed:
             print("  Nothing to normalise — all milestones already correct.")
