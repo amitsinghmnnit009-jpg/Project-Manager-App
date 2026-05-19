@@ -701,9 +701,12 @@ No active blockers. 3 fault injection scenarios pending bench availability (alre
 
 ## Highlights / Things to Watch
 
+### Missed commitments
+- **E2: Fault injection closure report not submitted.** Last week's plan committed E2 to author and submit the fault injection closure report this week. Fault injection reached 37/40 scenarios but the closure report was NOT produced — it is carried forward to next week. The 3 remaining scenarios (hardware bench dependency) also slipped. This is a missed commitment vs. the plan stated in the prior week's report.
+
 ### Progress signals
-- Project is on track and ahead of planned schedule for this phase. 37/40 fault injection scenarios complete with zero open defects; fault injection closure expected Monday.
-- Full SIT test suite ready — execution can start immediately after TL sign-off.
+- Project is on track overall. SIT test suite fully authored and environment ready — execution can start as soon as TL approves.
+- 37/40 fault injection scenarios complete with zero open defects; closure expected early next week once bench is available.
 """,
 }
 

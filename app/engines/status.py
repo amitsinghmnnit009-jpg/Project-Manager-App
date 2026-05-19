@@ -76,6 +76,32 @@ class StatusComputeResult:
     changed: Optional[bool] = None
 
 
+# ---------- Helpers ------------------------------------------------------
+
+def _apply_completion_pct_rule(parsed: dict) -> None:
+    """Compute completion_pct from the LLM's own per-milestone ai_verification.
+
+    Overrides whatever completion_pct the LLM produced so that Rule 5 is
+    applied correctly regardless of LLM compliance:
+      - Verified + Inconclusive Done milestones count toward completion.
+      - Disputed Done milestones are excluded.
+      - completion_pct = null when overall_health == "InsufficientEvidence".
+    """
+    if parsed.get("overall_health") == "InsufficientEvidence":
+        parsed["completion_pct"] = None
+        return
+    milestones = parsed.get("milestones") or []
+    if not milestones:
+        return
+    total = len(milestones)
+    effective_done = sum(
+        1 for m in milestones
+        if m.get("tl_declared_status") == "Done"
+        and m.get("ai_verification") in ("Verified", "Inconclusive")
+    )
+    parsed["completion_pct"] = round(effective_done / total * 100)
+
+
 # ---------- Public entrypoint -------------------------------------------
 
 def run_status_compute(project_code: str) -> StatusComputeResult:
@@ -229,6 +255,11 @@ def run_status_compute(project_code: str) -> StatusComputeResult:
                              llm_mode=llm.mode, error_text=result.error,
                              response_excerpt=(llm_result.text or "")[:500])
         return result
+
+    # Override completion_pct in code — LLM handles qualitative milestone
+    # assessment; arithmetic must be computed reliably regardless of LLM
+    # compliance with Rule 5 in the prompt.
+    _apply_completion_pct_rule(parsed)
 
     is_valid, issues = validate_prompt3_json(parsed)
     if not is_valid:
