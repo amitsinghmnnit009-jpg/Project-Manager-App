@@ -120,7 +120,7 @@ def main() -> None:
             counts[key] = counts.get(key, 0) + 1
 
         # Print sorted
-        for (tld, aiv), n in sorted(counts.items()):
+        for (tld, aiv), n in sorted(counts.items(), key=lambda x: (x[0][0] or "", x[0][1] or "")):
             flag = ""
             if tld == "Done":
                 if aiv in ("Verified", "Inconclusive"):
