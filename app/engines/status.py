@@ -78,6 +78,26 @@ class StatusComputeResult:
 
 # ---------- Helpers ------------------------------------------------------
 
+def _normalise_milestone_ai_verification(parsed: dict) -> None:
+    """Enforce the asymmetric trust model before schema validation.
+
+    The LLM occasionally mis-labels ai_verification on non-Done milestones
+    (e.g. "Inconclusive" instead of "NotApplicable"), which trips the
+    asymmetric-trust invariant in validate_prompt3_json and causes the whole
+    result to be rejected.  Silently fix those before validation so an
+    otherwise-good 50-milestone response isn't discarded over one field.
+
+    Also upgrades Done + "NotApplicable" → "Inconclusive" (the LLM forgot
+    to verify; we treat it as unverifiable rather than incorrect).
+    """
+    for m in parsed.get("milestones") or []:
+        tld = m.get("tl_declared_status")
+        if tld != "Done":
+            m["ai_verification"] = "NotApplicable"
+        elif m.get("ai_verification") == "NotApplicable":
+            m["ai_verification"] = "Inconclusive"
+
+
 def _apply_completion_pct_rule(parsed: dict) -> None:
     """Compute completion_pct from the LLM's own per-milestone ai_verification.
 
@@ -136,6 +156,32 @@ def run_status_compute(project_code: str) -> StatusComputeResult:
         return result
 
     project_id = project["id"]
+
+    # ---- Demo projects: return seeded status without calling any APIs ---
+    # DEMO-* projects have pre-seeded DB rows.  Calling real Confluence /
+    # JIRA endpoints would fail (demo URLs are not real). Return the seeded
+    # status as-is rather than overwriting it with a failed compute.
+    if project_code.startswith("DEMO-"):
+        result.success = True
+        result.changed = False
+        with session_scope() as s:
+            row = s.execute(
+                select(ProjectStatus).where(ProjectStatus.project_id == project_id)
+            ).scalar_one_or_none()
+            if row is not None:
+                result.parsed = {
+                    "overall_health": row.overall_health,
+                    "schedule_status": row.schedule_status,
+                    "completion_pct": row.completion_pct,
+                    "confidence": row.confidence,
+                    "rationale": row.rationale or "",
+                    "milestones": list(row.milestones_json or []),
+                    "evidence_cited": [],
+                }
+        log.info("status compute: demo project — returning seeded status",
+                 extra={"event": "status_compute_demo_passthrough",
+                        "project_code": project_code})
+        return result
 
     # ---- 2. Fetch Confluence pages (required: milestones + FR) ---------
     confl_cfg = get_config().confluence
@@ -256,9 +302,9 @@ def run_status_compute(project_code: str) -> StatusComputeResult:
                              response_excerpt=(llm_result.text or "")[:500])
         return result
 
-    # Override completion_pct in code — LLM handles qualitative milestone
-    # assessment; arithmetic must be computed reliably regardless of LLM
-    # compliance with Rule 5 in the prompt.
+    # Enforce asymmetric trust model before validation, then recompute
+    # completion_pct in code so Rule 5 arithmetic is always correct.
+    _normalise_milestone_ai_verification(parsed)
     _apply_completion_pct_rule(parsed)
 
     is_valid, issues = validate_prompt3_json(parsed)

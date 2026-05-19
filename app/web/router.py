@@ -786,23 +786,35 @@ def project_jira_activity(request: Request, code: str):
     activity_rows: list[dict] = []
     error: Optional[str] = None
     jira_base: str = ""
-    try:
-        from app.clients import get_jira_client
-        client = get_jira_client()
-        snap = client.get_project_snapshot(
-            project["jira_project_key"], project.get("issue_types") or None,
-        )
-        jira_base = (client.base or "").rstrip("/")
-        for r in (snap.recent_activity or []):
+
+    if code.startswith("DEMO-"):
+        from app.demo_data import DEMO_JIRA_ACTIVITY
+        for r in DEMO_JIRA_ACTIVITY.get(code, []):
             activity_rows.append({
                 "id": r["id"],
                 "title": r["title"],
                 "status": r["status"],
                 "last_activity": r.get("last_activity"),
-                "url": f"{jira_base}/browse/{r['id']}" if jira_base else "",
+                "url": "",
             })
-    except Exception as e:
-        error = f"{type(e).__name__}: {e}"
+    else:
+        try:
+            from app.clients import get_jira_client
+            client = get_jira_client()
+            snap = client.get_project_snapshot(
+                project["jira_project_key"], project.get("issue_types") or None,
+            )
+            jira_base = (client.base or "").rstrip("/")
+            for r in (snap.recent_activity or []):
+                activity_rows.append({
+                    "id": r["id"],
+                    "title": r["title"],
+                    "status": r["status"],
+                    "last_activity": r.get("last_activity"),
+                    "url": f"{jira_base}/browse/{r['id']}" if jira_base else "",
+                })
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
 
     return templates.TemplateResponse(
         request=request,

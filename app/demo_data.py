@@ -1105,6 +1105,46 @@ DEMO_SYSVAL = {
 
 
 # ---------------------------------------------------------------------------
+# Simulated JIRA activity — returned by the /jira-activity route for demo
+# projects instead of making a real JIRA API call.
+# Each entry: id, title, status, last_activity (YYYY-MM-DD string).
+# ---------------------------------------------------------------------------
+
+DEMO_JIRA_ACTIVITY: dict[str, list[dict]] = {
+    "DEMO-ASPICE": [
+        {"id": "ASPICE-231", "title": "CAN timeout under load — SIT case 21", "status": "Open", "last_activity": "2026-05-17"},
+        {"id": "ASPICE-229", "title": "SIT failure: power management SWC signal debounce", "status": "In Progress", "last_activity": "2026-05-18"},
+        {"id": "ASPICE-228", "title": "SIT case 12 — debounce timing in PDU router", "status": "In Progress", "last_activity": "2026-05-18"},
+        {"id": "ASPICE-220", "title": "Test fixture procurement for CIT cases 28–30", "status": "Done", "last_activity": "2026-05-11"},
+        {"id": "SWE4-REG", "title": "SWE.4 regression test specification (work product #9)", "status": "In Review", "last_activity": "2026-05-18"},
+        {"id": "SWE4-WP7", "title": "SWE.4 corrective work product #7 — minor update pending", "status": "In Progress", "last_activity": "2026-05-19"},
+        {"id": "ASPICE-216", "title": "CIT low-severity defect — message ID boundary", "status": "Done", "last_activity": "2026-05-05"},
+        {"id": "ASPICE-215", "title": "CIT low-severity defect — frame padding", "status": "Done", "last_activity": "2026-05-05"},
+    ],
+    "DEMO-HWINT": [
+        {"id": "HWINT-FI-38", "title": "Fault injection scenario 38 — short-circuit (scheduled Mon)", "status": "Open", "last_activity": "2026-05-19"},
+        {"id": "HWINT-FI-39", "title": "Fault injection scenario 39 — ground-shift (scheduled Mon)", "status": "Open", "last_activity": "2026-05-19"},
+        {"id": "HWINT-FI-40", "title": "Fault injection scenario 40 — open-circuit (scheduled Tue)", "status": "Open", "last_activity": "2026-05-19"},
+        {"id": "HWINT-SIT-40", "title": "SIT test case suite (cases 1–40) — under TL review", "status": "In Review", "last_activity": "2026-05-18"},
+        {"id": "HWINT-SIT-ENV", "title": "SIT environment integration to BMS test bench", "status": "Done", "last_activity": "2026-05-15"},
+        {"id": "HWINT-60", "title": "Overcurrent scenario: watchdog supervisor race condition", "status": "Done", "last_activity": "2026-05-12"},
+        {"id": "HWINT-56", "title": "Analog offset calibration at low temperature (NTC)", "status": "Done", "last_activity": "2026-05-07"},
+        {"id": "HWINT-55", "title": "Signal integrity: analog channel 3 offset at -40°C", "status": "Done", "last_activity": "2026-05-07"},
+    ],
+    "DEMO-SYSVAL": [
+        {"id": "BSW-SPI-01", "title": "MCAL SPI controller integration — week 2/4", "status": "In Progress", "last_activity": "2026-05-19"},
+        {"id": "BSW-NVM-01", "title": "NvM reconfiguration: stress tests + 10k-write retention", "status": "In Progress", "last_activity": "2026-05-18"},
+        {"id": "BSW-E2E-01", "title": "End-to-End Signal Validation test case authoring", "status": "In Progress", "last_activity": "2026-05-18"},
+        {"id": "BSW-MCAL-ADC", "title": "MCAL ADC driver integration and verification", "status": "Done", "last_activity": "2026-05-15"},
+        {"id": "SYSVAL-54", "title": "UDS low-voltage edge case — service 0x11 response timeout", "status": "Done", "last_activity": "2026-05-14"},
+        {"id": "SYSVAL-55", "title": "UDS low-voltage edge case — session rollback on undervoltage", "status": "Done", "last_activity": "2026-05-14"},
+        {"id": "SYSVAL-53", "title": "CAN signal endianness — diagnostic frame DLC mismatch", "status": "Done", "last_activity": "2026-05-12"},
+        {"id": "SYSVAL-51", "title": "CAN signal endianness — ARXML byte-order mismatch", "status": "Done", "last_activity": "2026-05-11"},
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
 # Top-level list used by seed_demo / clear_demo
 # ---------------------------------------------------------------------------
 
