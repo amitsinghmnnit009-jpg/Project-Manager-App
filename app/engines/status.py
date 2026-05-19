@@ -37,6 +37,7 @@ from app.db import session_scope
 from app.engines._status_prompt import (
     PROMPT_FILE, PROMPT_VERSION,
     render_full_prompt, validate_prompt3_json,
+    TL_STATUS_VALID,
 )
 from app.llm.base import get_llm_client
 from app.models import (
@@ -78,20 +79,58 @@ class StatusComputeResult:
 
 # ---------- Helpers ------------------------------------------------------
 
-def _normalise_milestone_ai_verification(parsed: dict) -> None:
-    """Enforce the asymmetric trust model before schema validation.
+# LLM sometimes returns synonyms for valid tl_declared_status enum values.
+# Map them to canonical values before validation so the whole response isn't
+# rejected over one field.  Keys are lowercase for case-insensitive lookup.
+_TL_STATUS_SYNONYMS: dict[str, str] = {
+    "completed":   "Done",
+    "complete":    "Done",
+    "closed":      "Done",
+    "finished":    "Done",
+    "done":        "Done",         # already valid but wrong case guard
+    "in progress": "In-progress",
+    "in_progress": "In-progress",
+    "inprogress":  "In-progress",
+    "wip":         "In-progress",
+    "open":        "In-progress",
+    "not started": "Pending",
+    "not_started": "Pending",
+    "todo":        "Pending",
+    "to do":       "Pending",
+}
 
-    The LLM occasionally mis-labels ai_verification on non-Done milestones
-    (e.g. "Inconclusive" instead of "NotApplicable"), which trips the
-    asymmetric-trust invariant in validate_prompt3_json and causes the whole
-    result to be rejected.  Silently fix those before validation so an
-    otherwise-good 50-milestone response isn't discarded over one field.
 
-    Also upgrades Done + "NotApplicable" → "Inconclusive" (the LLM forgot
-    to verify; we treat it as unverifiable rather than incorrect).
+def _normalise_milestone_fields(parsed: dict) -> None:
+    """Normalise tl_declared_status and ai_verification before validation.
+
+    Two corrections applied in order:
+
+    1. tl_declared_status synonyms — the LLM occasionally returns values like
+       'Completed' or 'In Progress' instead of the canonical enum values.
+       Map known synonyms; truly unknown values are set to None so they pass
+       the 'null is allowed' path in validate_prompt3_json rather than causing
+       the entire 50-milestone response to be rejected.
+
+    2. ai_verification asymmetric trust — non-Done milestones must be
+       'NotApplicable'; Done milestones should never be 'NotApplicable'
+       (upgrade to 'Inconclusive' so they count toward completion_pct).
     """
     for m in parsed.get("milestones") or []:
+        # --- 1. tl_declared_status ---
         tld = m.get("tl_declared_status")
+        if tld is not None:
+            canonical = _TL_STATUS_SYNONYMS.get(tld.lower())
+            if canonical:
+                m["tl_declared_status"] = canonical
+            elif tld not in TL_STATUS_VALID:
+                # Unknown value — null passes validation; milestone won't
+                # count toward completion (safe default).
+                m["tl_declared_status"] = None
+
+        # Re-read after possible update
+        tld = m.get("tl_declared_status")
+
+        # --- 2. ai_verification ---
         if tld != "Done":
             m["ai_verification"] = "NotApplicable"
         elif m.get("ai_verification") == "NotApplicable":
@@ -302,9 +341,9 @@ def run_status_compute(project_code: str) -> StatusComputeResult:
                              response_excerpt=(llm_result.text or "")[:500])
         return result
 
-    # Enforce asymmetric trust model before validation, then recompute
+    # Normalise milestone fields before validation, then recompute
     # completion_pct in code so Rule 5 arithmetic is always correct.
-    _normalise_milestone_ai_verification(parsed)
+    _normalise_milestone_fields(parsed)
     _apply_completion_pct_rule(parsed)
 
     is_valid, issues = validate_prompt3_json(parsed)
